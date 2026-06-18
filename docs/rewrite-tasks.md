@@ -74,18 +74,20 @@
 
 ---
 
-## Phase 2：数据层（Repository） — 先做无缓存的直读
+## Phase 2：数据层（Repository） — 先做无缓存的直读 ✅
 
-- [ ] **2.1** 定义所有数据模型 struct（对应 7 张表）
-- [ ] **2.2** 实现 `group_buy_activity` 查询（按 activity_id）
-- [ ] **2.3** 实现 `group_buy_discount` 查询（按 discount_id）
-- [ ] **2.4** 实现 `sc_sku_activity` 查询（按 source+channel+goods_id）
-- [ ] **2.5** 实现 `sku` 查询（按 goods_id）
-- [ ] **2.6** 实现 `group_buy_order_list` CRUD（查询/插入/更新状态）
-- [ ] **2.7** 实现 `group_buy_order` CRUD（查询/插入/更新 lock_count/complete_count/status）
-- [ ] **2.8** 实现 `notify_task` CRUD（查询未完成/插入/更新状态）
-- [ ] **2.9** 实现 `crowd_tags` + `crowd_tags_detail` 查询（人群标签过滤）
-- [ ] **2.10** 编写数据层单元测试
+- [x] **2.1** 定义所有数据模型 struct（对应 12 张表）→ `internal/model/*.go`
+- [x] **2.2** 实现 activities 查询（按 activity_id）→ `repository/activity.go`
+- [x] **2.3** 实现 discounts 查询（按 discount_id）→ `repository/activity.go`
+- [x] **2.4** 实现 activity_products 查询（按 source+channel+goods_id）→ `repository/activity.go`
+- [x] **2.5** 实现 products 查询（按 goods_id）→ `repository/product.go`
+- [x] **2.6** 实现 orders CRUD（查询/插入/更新状态）→ `repository/order.go`
+- [x] **2.7** 实现 teams CRUD（查询/插入/更新 lock_count/complete_count/status）→ `repository/order.go`
+- [x] **2.8** 实现 notify_tasks CRUD（查询未完成/插入/更新状态）→ `repository/notify_task.go`
+- [x] **2.9** 实现 crowd_tags + crowd_tag_details + crowd_tag_jobs 查询 → `repository/crowd.go`
+- [x] **2.10** 实现 payments + payment_logs CRUD → `repository/payment.go`
+- [x] **2.11** 定义缓存操作接口 → `repository/cache.go`（Phase 3 实现）
+- [x] **2.12** 编写数据层集成测试（Docker MySQL，31 个测试全部通过）
 
 ---
 
