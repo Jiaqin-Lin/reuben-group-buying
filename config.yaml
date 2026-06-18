@@ -1,0 +1,34 @@
+# 拼团营销系统配置
+# 环境变量优先级高于 YAML（如 DB_HOST 覆盖 mysql.host）
+
+server:
+  port: 8080
+  mode: debug  # debug | release | test
+  read_timeout: 10s
+  write_timeout: 10s
+
+mysql:
+  host: 127.0.0.1
+  port: 3306
+  user: dev
+  password: dev123
+  database: group_buy_market
+  max_open_conns: 50
+  max_idle_conns: 10
+  conn_max_lifetime: 300s
+
+redis:
+  addr: 127.0.0.1:6379
+  password: ""
+  db: 0
+
+log:
+  level: debug  # debug | info | warn | error
+  format: text  # text | json
+
+app:
+  name: group-buy
+  lock_result_ttl: 600     # 锁单结果缓存 TTL（秒）
+  order_lock_ttl: 3        # 分布式锁 TTL（秒）
+  notify_max_retry: 5      # 回调最大重试次数
+  timeout_scan_interval: 30 # 超时扫描间隔（秒）

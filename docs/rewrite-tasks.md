@@ -64,13 +64,13 @@
 
 ## Phase 1：基础设施搭建
 
-- [ ] **1.1** MySQL 连接池 + GORM 初始化
-- [ ] **1.2** Redis 客户端初始化（推荐 go-redis）
-- [ ] **1.3** 配置管理（环境变量 + YAML 配置文件）
-- [ ] **1.4** 日志框架（结构化日志，含 traceID）
-- [ ] **1.5** 统一响应格式（对标 Java Response.java）
-- [ ] **1.6** 统一错误码（对标 Java ResponseCode.java）
-- [ ] **1.7** HTTP 中间件：traceID 注入、请求日志、panic recover
+- [x] **1.1** MySQL 连接池 + GORM 初始化 → `internal/infra/mysql/mysql.go`
+- [x] **1.2** Redis 客户端初始化（推荐 go-redis）→ `internal/infra/redis/redis.go`
+- [x] **1.3** 配置管理（环境变量 + YAML 配置文件）→ `internal/config/config.go` + `config.yaml`
+- [x] **1.4** 日志框架（结构化日志，含 traceID）→ `internal/infra/log/log.go`
+- [x] **1.5** 统一响应格式（对标 Java Response.java）→ `internal/response.go`
+- [x] **1.6** 统一错误码（对标 Java ResponseCode.java）→ `internal/errors.go`
+- [x] **1.7** HTTP 中间件：traceID 注入、请求日志、panic recover → `internal/middleware/*/`
 
 ---
 
@@ -85,7 +85,7 @@
 - [ ] **2.7** 实现 `group_buy_order` CRUD（查询/插入/更新 lock_count/complete_count/status）
 - [ ] **2.8** 实现 `notify_task` CRUD（查询未完成/插入/更新状态）
 - [ ] **2.9** 实现 `crowd_tags` + `crowd_tags_detail` 查询（人群标签过滤）
-- [ ] **2.10** 编写数据层单元测试（用 SQLite 内存库 mock）
+- [ ] **2.10** 编写数据层单元测试
 
 ---
 
