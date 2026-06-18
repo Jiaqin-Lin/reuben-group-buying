@@ -3,12 +3,17 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
+
+	goredis "github.com/redis/go-redis/v9"
+
+	"github.com/reuben/group-buying/internal/redisx"
 )
 
 // CacheRepository 缓存操作接口。
 //
-// 所有缓存操作集中定义在这里，实现放 redisx 包（Phase 3）。
+// 所有缓存操作集中定义在这里，实现对 redisx 包的薄封装。
 // repository 层的其他文件通过此接口访问缓存，不直接依赖 Redis。
 //
 // Redis Key 约定（详见 CLAUDE.md）：
@@ -18,13 +23,13 @@ import (
 //	用户限购计数   bgm:take:{activityId}:{userId}             int64
 //	锁单结果缓存   bgm:lock:result:{userId}:{outTradeNo}      JSON (10min TTL)
 //	分布式锁       bgm:lock:order:{userId}:{outTradeNo}       lock (3s TTL)
-//	人群标签成员   bgm:tag:{tagId}:members                    BitSet
+//	人群标签成员   bgm:tag:{tagId}:members                    SET
 type CacheRepository interface {
 	// --- 名额占用（Lua 脚本，原子操作）---
 
 	// TryOccupyStock 尝试占用团名额。
 	// permitID = out_trade_no，防同一外部单号重复占位。
-	// 返回 true 表示占用成功，false 表示已满或已占用。
+	// 返回 true 表示占用成功（含幂等），false 表示已满。
 	TryOccupyStock(ctx context.Context, activityID int64, teamID string, permitID string, maxSlots int, ttl time.Duration) (bool, error)
 
 	// ReleaseStock 释放名额（SREM out_trade_no）。
@@ -70,57 +75,145 @@ type CacheRepository interface {
 
 	// --- 人群标签缓存 ---
 
-	// SetCrowdMembers 设置人群标签成员 BitSet。
+	// SetCrowdMembers 设置人群标签成员（批量 SADD）。
 	SetCrowdMembers(ctx context.Context, tagID string, userIDs []string) error
 
-	// CheckCrowdMember 检查用户是否在人群标签中（缓存层）。
+	// CheckCrowdMember 检查用户是否在人群标签中（SISMEMBER）。
 	CheckCrowdMember(ctx context.Context, tagID, userID string) (bool, error)
 }
 
-// stubCacheRepo 空实现，Phase 3 替换为真实 Redis 实现。
-type stubCacheRepo struct{}
-
-// NewStubCacheRepo Phase 2 临时使用，Phase 3 废弃。
-func NewStubCacheRepo() CacheRepository {
-	return &stubCacheRepo{}
+// redisCacheRepo 基于 go-redis 的 CacheRepository 实现。
+// 对 redisx 包的薄封装：主要负责 key 构建和结果映射，
+// 真正的 Redis 原子操作（Lua 脚本）放在 redisx 包。
+type redisCacheRepo struct {
+	rdb *goredis.Client
 }
 
-func (s *stubCacheRepo) TryOccupyStock(ctx context.Context, activityID int64, teamID string, permitID string, maxSlots int, ttl time.Duration) (bool, error) {
-	return true, nil
+// NewRedisCacheRepo 创建 Redis 缓存仓库。
+func NewRedisCacheRepo(rdb *goredis.Client) CacheRepository {
+	return &redisCacheRepo{rdb: rdb}
 }
-func (s *stubCacheRepo) ReleaseStock(ctx context.Context, activityID int64, teamID string, permitID string) error {
+
+// --- 名额占用 ---
+
+func (r *redisCacheRepo) TryOccupyStock(ctx context.Context, activityID int64, teamID string, permitID string, maxSlots int, ttl time.Duration) (bool, error) {
+	result, err := redisx.TryOccupyStock(ctx, r.rdb, activityID, teamID, permitID, maxSlots, ttl)
+	if err != nil {
+		return false, fmt.Errorf("cache try occupy stock: %w", err)
+	}
+	// OccupyOK (1) 和 OccupyIdempotent (2) 都视为成功
+	// OccupyFull (-1) 才返回 false
+	return result != redisx.OccupyFull, nil
+}
+
+func (r *redisCacheRepo) ReleaseStock(ctx context.Context, activityID int64, teamID string, permitID string) error {
+	err := redisx.ReleaseStock(ctx, r.rdb, activityID, teamID, permitID)
+	if err != nil {
+		return fmt.Errorf("cache release stock: %w", err)
+	}
 	return nil
 }
-func (s *stubCacheRepo) CheckStock(ctx context.Context, activityID int64, teamID string, permitID string) (bool, error) {
-	return false, nil
+
+func (r *redisCacheRepo) CheckStock(ctx context.Context, activityID int64, teamID string, permitID string) (bool, error) {
+	ok, err := redisx.CheckStock(ctx, r.rdb, activityID, teamID, permitID)
+	if err != nil {
+		return false, fmt.Errorf("cache check stock: %w", err)
+	}
+	return ok, nil
 }
-func (s *stubCacheRepo) MarkTeamFull(ctx context.Context, activityID int64, teamID string, ttl time.Duration) error {
+
+func (r *redisCacheRepo) MarkTeamFull(ctx context.Context, activityID int64, teamID string, ttl time.Duration) error {
+	err := redisx.MarkTeamFull(ctx, r.rdb, activityID, teamID, ttl)
+	if err != nil {
+		return fmt.Errorf("cache mark team full: %w", err)
+	}
 	return nil
 }
-func (s *stubCacheRepo) IsTeamFull(ctx context.Context, activityID int64, teamID string) (bool, error) {
-	return false, nil
+
+func (r *redisCacheRepo) IsTeamFull(ctx context.Context, activityID int64, teamID string) (bool, error) {
+	ok, err := redisx.IsTeamFull(ctx, r.rdb, activityID, teamID)
+	if err != nil {
+		return false, fmt.Errorf("cache is team full: %w", err)
+	}
+	return ok, nil
 }
-func (s *stubCacheRepo) IncrTakeCount(ctx context.Context, activityID int64, userID string) (int64, error) {
-	return 0, nil
+
+// --- 用户限购计数 ---
+
+func (r *redisCacheRepo) IncrTakeCount(ctx context.Context, activityID int64, userID string) (int64, error) {
+	count, err := redisx.IncrTakeCount(ctx, r.rdb, activityID, userID)
+	if err != nil {
+		return 0, fmt.Errorf("cache incr take count: %w", err)
+	}
+	return count, nil
 }
-func (s *stubCacheRepo) GetTakeCount(ctx context.Context, activityID int64, userID string) (int64, error) {
-	return 0, nil
+
+func (r *redisCacheRepo) GetTakeCount(ctx context.Context, activityID int64, userID string) (int64, error) {
+	count, err := redisx.GetTakeCount(ctx, r.rdb, activityID, userID)
+	if err != nil {
+		return 0, fmt.Errorf("cache get take count: %w", err)
+	}
+	return count, nil
 }
-func (s *stubCacheRepo) CacheLockResult(ctx context.Context, userID, outTradeNo string, result json.RawMessage, ttl time.Duration) error {
+
+// --- 锁单结果缓存 ---
+
+func (r *redisCacheRepo) CacheLockResult(ctx context.Context, userID, outTradeNo string, result json.RawMessage, ttl time.Duration) error {
+	key := redisx.LockResultKey(userID, outTradeNo)
+	// redisx.CacheSet 内部会 json.Marshal，所以传 string(result) 会被双重编码。
+	// 直接用 rdb.Set 存储原始 JSON 字节。
+	ttlSec := max(ttl.Seconds(), 1)
+	err := r.rdb.Set(ctx, key, result, time.Duration(ttlSec)*time.Second).Err()
+	if err != nil {
+		return fmt.Errorf("cache lock result: %w", err)
+	}
 	return nil
 }
-func (s *stubCacheRepo) GetLockResult(ctx context.Context, userID, outTradeNo string) (json.RawMessage, error) {
-	return nil, nil
+
+func (r *redisCacheRepo) GetLockResult(ctx context.Context, userID, outTradeNo string) (json.RawMessage, error) {
+	key := redisx.LockResultKey(userID, outTradeNo)
+	data, err := r.rdb.Get(ctx, key).Bytes()
+	if err == goredis.Nil {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("cache get lock result: %w", err)
+	}
+	return json.RawMessage(data), nil
 }
-func (s *stubCacheRepo) AcquireLock(ctx context.Context, key string, ttl time.Duration) (bool, error) {
-	return true, nil
+
+// --- 分布式锁 ---
+
+func (r *redisCacheRepo) AcquireLock(ctx context.Context, key string, ttl time.Duration) (bool, error) {
+	acquired, err := redisx.AcquireLockSimple(ctx, r.rdb, key, ttl)
+	if err != nil {
+		return false, fmt.Errorf("cache acquire lock: %w", err)
+	}
+	return acquired, nil
 }
-func (s *stubCacheRepo) ReleaseLock(ctx context.Context, key string) error {
+
+func (r *redisCacheRepo) ReleaseLock(ctx context.Context, key string) error {
+	err := redisx.ReleaseLockSimple(ctx, r.rdb, key)
+	if err != nil {
+		return fmt.Errorf("cache release lock: %w", err)
+	}
 	return nil
 }
-func (s *stubCacheRepo) SetCrowdMembers(ctx context.Context, tagID string, userIDs []string) error {
+
+// --- 人群标签缓存 ---
+
+func (r *redisCacheRepo) SetCrowdMembers(ctx context.Context, tagID string, userIDs []string) error {
+	err := redisx.AddCrowdMembers(ctx, r.rdb, tagID, userIDs)
+	if err != nil {
+		return fmt.Errorf("cache set crowd members: %w", err)
+	}
 	return nil
 }
-func (s *stubCacheRepo) CheckCrowdMember(ctx context.Context, tagID, userID string) (bool, error) {
-	return false, nil
+
+func (r *redisCacheRepo) CheckCrowdMember(ctx context.Context, tagID, userID string) (bool, error) {
+	ok, err := redisx.CheckCrowdMember(ctx, r.rdb, tagID, userID)
+	if err != nil {
+		return false, fmt.Errorf("cache check crowd member: %w", err)
+	}
+	return ok, nil
 }

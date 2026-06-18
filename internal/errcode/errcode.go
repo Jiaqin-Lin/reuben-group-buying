@@ -1,7 +1,8 @@
-package internal
-
-// 统一错误码。
+// Package errcode 统一业务错误码。
 // 简化自 Java ResponseCode.java，保留业务语义但去掉了枚举的过度设计。
+package errcode
+
+// 错误码常量
 const (
 	CodeSuccess = "0000"
 

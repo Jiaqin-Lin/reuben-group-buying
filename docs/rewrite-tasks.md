@@ -102,7 +102,7 @@
 - [ ] **3.4** 实现分布式锁 `AcquireLock(ctx, key, ttl)` / `ReleaseLock(ctx, key)`
 - [ ] **3.5** 实现锁单结果缓存 `CacheLockResult(ctx, key, data, ttl)` / `GetLockResult(ctx, key)`
 - [ ] **3.6** 实现用户限购计数 `IncrUserTakeCount(ctx, activityId, userId)` / `GetUserTakeCount(ctx, activityId, userId)`
-- [ ] **3.7** Redis 层单元测试（用 miniredis mock）
+- [ ] **3.7** Redis 层单元测试
 
 ---
 

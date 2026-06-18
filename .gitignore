@@ -37,3 +37,6 @@ tmp/
 
 # Docker volumes (if mounting locally)
 data/
+
+# Java reference code (read-only, not part of Go project)
+group-shopping/
