@@ -91,18 +91,18 @@
 
 ---
 
-## Phase 3：Redis 层
+## Phase 3：Redis 层 ✅
 
-- [ ] **3.1** 把 Java 代码中的 Lua 脚本提取到独立 `.lua` 文件
-  - `scripts/lua/occupy_stock.lua` — 占用名额
-  - `scripts/lua/release_stock.lua` — 释放名额
-  - `scripts/lua/check_stock.lua` — 检查是否已占用
-- [ ] **3.2** 实现名额占用函数 `TryOccupyTeamStock(ctx, key, permitId, total, ttl)`
-- [ ] **3.3** 实现名额释放函数 `ReleaseTeamStock(ctx, key, permitId)`
-- [ ] **3.4** 实现分布式锁 `AcquireLock(ctx, key, ttl)` / `ReleaseLock(ctx, key)`
-- [ ] **3.5** 实现锁单结果缓存 `CacheLockResult(ctx, key, data, ttl)` / `GetLockResult(ctx, key)`
-- [ ] **3.6** 实现用户限购计数 `IncrUserTakeCount(ctx, activityId, userId)` / `GetUserTakeCount(ctx, activityId, userId)`
-- [ ] **3.7** Redis 层单元测试
+- [x] **3.1** 把 Java 代码中的 Lua 脚本提取到独立 `.lua` 文件
+  - `internal/redisx/lua/occupy_stock.lua` — 原子占用名额（full 哨兵 + 幂等 + TTL 控制）
+  - `internal/redisx/lua/release_stock.lua` — 原子释放名额（SREM + 解除满标）
+  - `internal/redisx/lua/take_limit_incr.lua` — 原子限购检查+递增（冷启动安全）
+- [x] **3.2** 实现名额占用函数 `TryOccupyStock(ctx, rdb, activityID, teamID, outTradeNo, targetCount, ttl)`
+- [x] **3.3** 实现名额释放函数 `ReleaseStock(ctx, rdb, activityID, teamID, outTradeNo)`
+- [x] **3.4** 实现分布式锁 `AcquireLock(ctx, rdb, key, ttl)` / `ReleaseLock(ctx, rdb, key, token)`（SETNX + Lua 安全释放）
+- [x] **3.5** 实现锁单结果缓存 `CacheLockResult(ctx, ...)` / `GetLockResult(ctx, ...)` + 通用 CacheSet/Get/Del
+- [x] **3.6** 实现用户限购计数 `TakeLimitCheckAndIncr` / `IncrTakeCount` / `GetTakeCount` / `InitTakeCount`
+- [x] **3.7** Redis 层单元测试（30 个测试，含并发测试，-race 通过）
 
 ---
 
