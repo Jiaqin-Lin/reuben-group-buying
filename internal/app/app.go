@@ -15,9 +15,12 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/robfig/cron/v3"
+
 	"github.com/reuben/group-buying/internal/config"
 	"github.com/reuben/group-buying/internal/handler"
 	"github.com/reuben/group-buying/internal/infra/log"
+	"github.com/reuben/group-buying/internal/infra/mq"
 	"github.com/reuben/group-buying/internal/infra/mysql"
 	"github.com/reuben/group-buying/internal/infra/redis"
 	"github.com/reuben/group-buying/internal/middleware/logging"
@@ -29,9 +32,10 @@ import (
 
 // App 聚合所有运行时组件。
 type App struct {
-	cfg    *config.Config
-	logger *slog.Logger
-	srv    *http.Server
+	cfg       *config.Config
+	logger    *slog.Logger
+	srv       *http.Server
+	notifySvc *service.NotifyService
 }
 
 // New 从配置构建完整的 App。
@@ -81,6 +85,15 @@ func New(cfg *config.Config) (*App, error) {
 	settlementSvc := service.NewSettlementService(orderRepo, activityRepo, cacheRepo, notifyRepo)
 	refundSvc := service.NewRefundService(orderRepo, paymentRepo, cacheRepo, notifyRepo)
 
+	// 8. 组装 MQ 和 Notify 服务（Phase 8）
+	mqClient := mq.New(rdb, logger)
+	notifySvc := service.NewNotifyService(
+		notifyRepo, cacheRepo, mqClient,
+		service.NotifyServiceConfig{
+			MaxRetry: cfg.App.NotifyMaxRetry,
+		},
+	)
+
 	// 6. 组装 Handler 层
 	indexHandler := handler.NewIndexHandler(trialSvc)
 	tradeHandler := handler.NewTradeHandler(lockSvc, settlementSvc, refundSvc)
@@ -99,8 +112,9 @@ func New(cfg *config.Config) (*App, error) {
 	router.POST("/api/v1/trade/refund", tradeHandler.Refund)
 
 	return &App{
-		cfg:    cfg,
-		logger: logger,
+		cfg:       cfg,
+		logger:    logger,
+		notifySvc: notifySvc,
 		srv: &http.Server{
 			Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
 			Handler:      router,
@@ -110,8 +124,9 @@ func New(cfg *config.Config) (*App, error) {
 	}, nil
 }
 
-// Run 启动 HTTP 服务并等待退出信号，收到 SIGINT/SIGTERM 后优雅关闭。
+// Run 启动 HTTP 服务、定时任务，并等待退出信号，收到 SIGINT/SIGTERM 后优雅关闭。
 func (a *App) Run() error {
+	// 启动 HTTP 服务
 	go func() {
 		a.logger.Info("server starting", "port", a.cfg.Server.Port, "mode", a.cfg.Server.Mode)
 		if err := a.srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -120,11 +135,28 @@ func (a *App) Run() error {
 		}
 	}()
 
+	// 启动定时任务：每 15s 扫描待发送的回调通知
+	c := cron.New()
+	_, err := c.AddFunc("@every 15s", func() {
+		ctx := context.Background()
+		if err := a.notifySvc.ExecPendingTasks(ctx); err != nil {
+			a.logger.Error("notify cron job failed", "error", err)
+		}
+	})
+	if err != nil {
+		return fmt.Errorf("add cron job: %w", err)
+	}
+	c.Start()
+	a.logger.Info("cron jobs started", "jobs", "notify-scanner@15s")
+
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
 	a.logger.Info("server shutting down")
+
+	// 先停定时任务
+	cronCtx := c.Stop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -133,6 +165,9 @@ func (a *App) Run() error {
 		a.logger.Error("server shutdown", "error", err)
 		return err
 	}
+
+	// 等待 cron 任务执行完毕
+	<-cronCtx.Done()
 
 	a.logger.Info("server stopped")
 	return nil

@@ -206,13 +206,26 @@
 
 ---
 
-## Phase 8：回调通知（Notify Task）
+## Phase 8：回调通知（Notify Task）✅
 
-- [ ] **8.1** 实现 HTTP 回调：POST 到 notify_url，带 body（teamId + outTradeNoList）
-- [ ] **8.2** 实现 MQ 回调
-- [ ] **8.3** 实现回调重试机制（成功 → status=1, 失败 → retry_count+1)
-- [ ] **8.4** 定时扫描未完成任务（游标分页，每次限量处理）
-- [ ] **8.5** 回调任务单元测试
+- [x] **8.1** 实现 HTTP 回调：`service/notify.go` `httpNotify()` — POST JSON 到 notify_url，2xx=成功
+- [x] **8.2** 实现 MQ 回调：`infra/mq/mq.go` Redis Pub/Sub（替换 stub），`service/notify.go` `mqNotify()` — Publish 到 channel
+- [x] **8.3** 实现回调重试机制（成功 → status=1, 失败 → retry_count+1, 达上限 → status=3）
+- [x] **8.4** 定时扫描未完成任务：`robfig/cron/v3` 每 15s 执行 `ExecPendingTasks()`，游标分页 + 并发发送（semaphore 控制并发度 10），全局分布式锁防多实例重复扫描
+- [x] **8.5** 回调任务单元测试（8 个测试全部通过，-race 通过）：HTTP 成功/失败/耗尽/MQ/空 URL/已完成跳过/批量/连接拒绝/扫描器锁
+
+> **与 Java 版关键差异**：
+> - 仅 cron 扫描（不用 eager dispatch + cron 双路径），更简单。后续如需低延迟加一行 `go notifySvc.ExecForTeam(ctx, teamID)` 即可。
+> - 仅全局分布式锁（不用 per-team 双重锁），worker pool 控制并发。
+> - MQ 用 Redis Pub/Sub（不用 RocketMQ），notify_tasks 表提供持久化兜底。
+> - 无 MQ listener 异步补偿（Go 版名额释放已改为同步，不需要）。
+
+**新增/修改文件**：
+- `internal/service/notify.go`（~220 行）— NotifyService：ExecPendingTasks / execOneTask / dispatch / httpNotify / mqNotify
+- `internal/infra/mq/mq.go`（~80 行）— Redis Pub/Sub：Publish + Subscribe（替换 stub）
+- `internal/app/app.go` — 集成 mq.Client、NotifyService、cron job
+- `internal/service/notify_test.go`（~330 行）— 9 个单元测试
+- `go.mod` — 新增 `github.com/robfig/cron/v3`
 
 ---
 
