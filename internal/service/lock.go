@@ -3,15 +3,17 @@ package service
 
 import (
 	"context"
-	cryptorand "crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"math/big"
+	"math/rand/v2"
 	"time"
 
+	"github.com/reuben/group-buying/internal/cache"
+	"github.com/reuben/group-buying/internal/config/dynamic"
 	"github.com/reuben/group-buying/internal/errcode"
 	"github.com/reuben/group-buying/internal/model"
+	"github.com/reuben/group-buying/internal/pay"
 	"github.com/reuben/group-buying/internal/redisx"
 	"github.com/reuben/group-buying/internal/repository"
 )
@@ -29,6 +31,9 @@ type LockService struct {
 	orderRepo    repository.OrderRepository
 	activityRepo repository.ActivityRepository
 	cacheRepo    repository.CacheRepository
+	localCache   *cache.LocalCache
+	payGateway   pay.Gateway
+	paymentRepo  repository.PaymentRepository
 	lockTTL      time.Duration
 	resultTTL    time.Duration
 }
@@ -39,6 +44,9 @@ func NewLockService(
 	orderRepo repository.OrderRepository,
 	activityRepo repository.ActivityRepository,
 	cacheRepo repository.CacheRepository,
+	localCache *cache.LocalCache,
+	payGateway pay.Gateway,
+	paymentRepo repository.PaymentRepository,
 	lockTTL, resultTTL time.Duration,
 ) *LockService {
 	return &LockService{
@@ -46,6 +54,9 @@ func NewLockService(
 		orderRepo:    orderRepo,
 		activityRepo: activityRepo,
 		cacheRepo:    cacheRepo,
+		localCache:   localCache,
+		payGateway:   payGateway,
+		paymentRepo:  paymentRepo,
 		lockTTL:      lockTTL,
 		resultTTL:    resultTTL,
 	}
@@ -67,23 +78,28 @@ type LockRequest struct {
 type LockResult struct {
 	OrderID        string `json:"order_id"`
 	OutTradeNo     string `json:"out_trade_no"`
+	UserID         string `json:"user_id"`
 	TeamID         string `json:"team_id"`
 	OriginalPrice  string `json:"original_price"`
 	DeductionPrice string `json:"deduction_price"`
 	PayPrice       string `json:"pay_price"`
-	Status         int    `json:"status"` // 0=锁定待支付
+	PayURL         string `json:"pay_url,omitempty"`
+	Status         int    `json:"status"`
 }
 
 // Lock 锁单主流程。
 //
-// 三层层幂等防护：
-//  1. 缓存层（Redis，10min TTL）
-//  2. 分布式锁层（Redis SETNX，3s TTL）
-//  3. 数据库层（out_trade_no 唯一索引）
+// 幂等防护（对齐 Java 版三层架构）：
+//  1. 缓存层（Redis，10min TTL）— 快速路径
+//  2. 分布式锁层（Redis SETNX，3s TTL）— 序列化同 outTradeNo
+//  3. 数据库层（out_trade_no 唯一索引）— 最后防线
+//
+// 与 Java 版对齐：锁前不做 DB 查询。缓存未命中直接抢锁，DB 唯一索引兜底。
+// 压测场景（全部唯一 outTradeNo）可省掉每次锁单 1 次无效 DB SELECT。
 func (s *LockService) Lock(ctx context.Context, req LockRequest) (*LockResult, error) {
 	slog.DebugContext(ctx, "lock start", "user_id", req.UserID, "out_trade_no", req.OutTradeNo, "team_id", req.TeamID)
 
-	// 1. 幂等检查：缓存
+	// 1. 幂等检查：缓存（快速路径）
 	if cached, err := s.getCachedResult(ctx, req.UserID, req.OutTradeNo); err != nil {
 		slog.WarnContext(ctx, "lock: cache lookup failed", "out_trade_no", req.OutTradeNo, "error", err)
 	} else if cached != nil {
@@ -91,15 +107,7 @@ func (s *LockService) Lock(ctx context.Context, req LockRequest) (*LockResult, e
 		return cached, nil
 	}
 
-	// 2. 幂等检查：数据库
-	if existing, err := s.findExistingOrder(ctx, req.UserID, req.OutTradeNo); err != nil {
-		slog.WarnContext(ctx, "lock: db lookup failed", "out_trade_no", req.OutTradeNo, "error", err)
-	} else if existing != nil {
-		s.cacheResult(ctx, req.UserID, req.OutTradeNo, existing)
-		return existing, nil
-	}
-
-	// 3. 获取分布式锁
+	// 2. 获取分布式锁
 	lockKey := redisx.LockOrderKey(req.UserID, req.OutTradeNo)
 	acquired, err := s.cacheRepo.AcquireLock(ctx, lockKey, s.lockTTL)
 	if err != nil {
@@ -114,14 +122,21 @@ func (s *LockService) Lock(ctx context.Context, req LockRequest) (*LockResult, e
 		}
 	}()
 
-	// 4. 获取锁后再次检查缓存（防止并发窗口）
+	// 3. 获取锁后再次检查缓存+DB（防止并发窗口）
+	//    缓存优先（快），未命中才查 DB（慢，但锁内串行，QPS 可控）
 	if cached, err := s.getCachedResult(ctx, req.UserID, req.OutTradeNo); err != nil {
 		slog.WarnContext(ctx, "lock: double-check cache failed", "error", err)
 	} else if cached != nil {
 		return cached, nil
 	}
+	if existing, err := s.findExistingOrder(ctx, req.UserID, req.OutTradeNo); err != nil {
+		slog.WarnContext(ctx, "lock: db lookup failed", "out_trade_no", req.OutTradeNo, "error", err)
+	} else if existing != nil {
+		s.cacheResult(ctx, req.UserID, req.OutTradeNo, existing)
+		return existing, nil
+	}
 
-	// 5. 试算：定价 + 活动校验 + 人群标签
+	// 4. 试算：定价 + 活动校验 + 人群标签（本地缓存命中，不查 Redis/DB）
 	trialReq := TrialRequest{
 		UserID:  req.UserID,
 		GoodsID: req.GoodsID,
@@ -142,8 +157,8 @@ func (s *LockService) Lock(ctx context.Context, req LockRequest) (*LockResult, e
 		return nil, &LockError{Code: errcode.CodeCrowdBlocked, Err: fmt.Errorf("user not in required crowd for activity %d", req.ActivityID)}
 	}
 
-	// 6. 限购检查（只查已支付订单数，不计锁定的）
-	activity, err := s.activityRepo.FindActivityByID(ctx, req.ActivityID)
+	// 5. 限购检查（只查已支付订单数，不计锁定的）
+	activity, err := s.getActivity(ctx, req.ActivityID)
 	if err != nil {
 		return nil, fmt.Errorf("lock: find activity: %w", err)
 	}
@@ -158,7 +173,7 @@ func (s *LockService) Lock(ctx context.Context, req LockRequest) (*LockResult, e
 		}
 	}
 
-	// 7. 执行锁单（新建团 / 加入团）
+	// 6. 执行锁单（新建团 / 加入团）
 	stockTTL := time.Duration(activity.ValidMinutes) * time.Minute
 	var result *LockResult
 	if req.TeamID == "" {
@@ -168,6 +183,16 @@ func (s *LockService) Lock(ctx context.Context, req LockRequest) (*LockResult, e
 	}
 	if err != nil {
 		return nil, err
+	}
+
+	// 7. 创建支付单（压测/测试时可降级跳过）
+	if s.payGateway != nil && !dynamic.FeatureSkipPayment.Get() {
+		payURL, paymentErr := s.createPayment(ctx, result)
+		if paymentErr != nil {
+			slog.WarnContext(ctx, "lock: create payment failed", "order_id", result.OrderID, "error", paymentErr)
+		} else {
+			result.PayURL = payURL
+		}
 	}
 
 	// 8. 缓存结果
@@ -243,28 +268,34 @@ func (s *LockService) lockNewTeam(ctx context.Context, req LockRequest, trial *T
 }
 
 // lockJoinTeam 加入已有团。
+//
+// 秒杀优化：先 Redis Lua 占名额（满标快速拒绝，~0.1ms），成功后再查 DB 校验团状态。
+// 被拒绝的请求只做 1 次 Redis 往返，不碰 DB。
 func (s *LockService) lockJoinTeam(ctx context.Context, req LockRequest, trial *TrialResult, activity *model.Activity, stockTTL time.Duration) (*LockResult, error) {
-	// 校验团存在且仍在拼团中
-	team, err := s.orderRepo.FindTeamByID(ctx, req.TeamID)
-	if err != nil {
-		return nil, &LockError{Code: errcode.CodeOrderNotFound, Err: fmt.Errorf("team %s not found: %w", req.TeamID, err)}
-	}
-	if team.Status != model.TeamStatusForming {
-		return nil, &LockError{Code: errcode.CodeTeamFull, Err: fmt.Errorf("team %s is not forming (status=%d)", req.TeamID, team.Status)}
-	}
-	if time.Now().After(team.ValidEnd) {
-		return nil, &LockError{Code: errcode.CodeActivityTimeInvalid, Err: fmt.Errorf("team %s expired at %v", req.TeamID, team.ValidEnd)}
-	}
-
 	orderID := generateNumericID(12)
 
-	// Redis Lua 原子占名额
+	// 1. Redis Lua 原子占名额（优先，满标直接拒绝，不查 DB）
 	ok, err := s.cacheRepo.TryOccupyStock(ctx, req.ActivityID, req.TeamID, req.OutTradeNo, activity.TargetCount, stockTTL)
 	if err != nil {
 		return nil, fmt.Errorf("lock: occupy stock join team: %w", err)
 	}
 	if !ok {
 		return nil, &LockError{Code: errcode.CodeStockInsufficient, Err: fmt.Errorf("team %s stock full", req.TeamID)}
+	}
+
+	// 2. 占位成功后校验团状态（DB 查询）
+	team, err := s.orderRepo.FindTeamByID(ctx, req.TeamID)
+	if err != nil {
+		s.cacheRepo.ReleaseStock(ctx, req.ActivityID, req.TeamID, req.OutTradeNo)
+		return nil, &LockError{Code: errcode.CodeOrderNotFound, Err: fmt.Errorf("team %s not found: %w", req.TeamID, err)}
+	}
+	if team.Status != model.TeamStatusForming {
+		s.cacheRepo.ReleaseStock(ctx, req.ActivityID, req.TeamID, req.OutTradeNo)
+		return nil, &LockError{Code: errcode.CodeTeamFull, Err: fmt.Errorf("team %s is not forming (status=%d)", req.TeamID, team.Status)}
+	}
+	if time.Now().After(team.ValidEnd) {
+		s.cacheRepo.ReleaseStock(ctx, req.ActivityID, req.TeamID, req.OutTradeNo)
+		return nil, &LockError{Code: errcode.CodeActivityTimeInvalid, Err: fmt.Errorf("team %s expired at %v", req.TeamID, team.ValidEnd)}
 	}
 
 	order := &model.Order{
@@ -296,6 +327,48 @@ func (s *LockService) lockJoinTeam(ctx context.Context, req LockRequest, trial *
 }
 
 // --- 辅助函数 ---
+
+// createPayment 创建支付单并调用支付网关获取 payUrl。
+func (s *LockService) createPayment(ctx context.Context, result *LockResult) (string, error) {
+	order := &model.Order{
+		OrderID:    result.OrderID,
+		OutTradeNo: result.OutTradeNo,
+		PayPrice:   result.PayPrice,
+	}
+
+	payResult, err := s.payGateway.CreateOrder(ctx, order)
+	if err != nil {
+		return "", fmt.Errorf("gateway create order: %w", err)
+	}
+
+	payURL := payResult.PayURL
+	payment := &model.Payment{
+		OrderID:    result.OrderID,
+			OutTradeNo: result.OutTradeNo,
+			UserID:     result.UserID,
+			TeamID:     result.TeamID,
+		Amount:     result.PayPrice,
+		Subject:    "拼团订单",
+		PayURL:     &payURL,
+		Status:     model.PaymentStatusPending,
+		ExpireAt:   time.Now().Add(15 * time.Minute),
+	}
+	if err := s.paymentRepo.CreatePayment(ctx, payment); err != nil {
+		slog.WarnContext(ctx, "lock: save payment record failed", "order_id", result.OrderID, "error", err)
+	}
+
+	return payResult.PayURL, nil
+}
+
+// getActivity 查活动（本地缓存 → DB fallback）。
+func (s *LockService) getActivity(ctx context.Context, activityID int64) (*model.Activity, error) {
+	if s.localCache != nil {
+		if a, ok := s.localCache.GetActivity(activityID); ok {
+			return a, nil
+		}
+	}
+	return s.activityRepo.FindActivityByID(ctx, activityID)
+}
 
 // getCachedResult 从缓存获取锁单结果。
 func (s *LockService) getCachedResult(ctx context.Context, userID, outTradeNo string) (*LockResult, error) {
@@ -343,6 +416,7 @@ func buildLockResult(order *model.Order, teamID string) *LockResult {
 	return &LockResult{
 		OrderID:        order.OrderID,
 		OutTradeNo:     order.OutTradeNo,
+		UserID:         order.UserID,
 		TeamID:         teamID,
 		OriginalPrice:  order.OriginalPrice,
 		DeductionPrice: order.DeductionPrice,
@@ -351,12 +425,12 @@ func buildLockResult(order *model.Order, teamID string) *LockResult {
 	}
 }
 
-// generateNumericID 生成指定长度的随机数字字符串（crypto/rand）。
+// generateNumericID 生成指定长度的随机数字字符串。
+// 用 math/rand/v2（PCG 算法，无锁，~3ns/op），非安全场景不需要 crypto/rand。
 func generateNumericID(length int) string {
 	b := make([]byte, length)
 	for i := range b {
-		n, _ := cryptorand.Int(cryptorand.Reader, big.NewInt(10))
-		b[i] = byte('0' + n.Int64())
+		b[i] = byte('0' + rand.IntN(10))
 	}
 	return string(b)
 }

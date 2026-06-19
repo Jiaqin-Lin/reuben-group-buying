@@ -156,7 +156,7 @@ func newTestTrialService(t *testing.T) *TrialService {
 		repository.NewActivityRepo(testDB),
 		repository.NewProductRepo(testDB),
 		repository.NewRedisCacheRepo(testRDB),
-		repository.NewCrowdRepo(testDB),
+		repository.NewCrowdRepo(testDB), nil, // localCache: tests use DB directly
 	)
 }
 

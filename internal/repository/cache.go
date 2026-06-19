@@ -85,6 +85,15 @@ type CacheRepository interface {
 
 	// CheckCrowdMember 检查用户是否在人群标签中（SISMEMBER）。
 	CheckCrowdMember(ctx context.Context, tagID, userID string) (bool, error)
+
+	// --- 试算结果缓存 ---
+
+	// CacheTrialResult 缓存试算结果（短 TTL，防重试穿透）。
+	CacheTrialResult(ctx context.Context, userID, source, channel, goodsID string, result any, ttl time.Duration) error
+
+	// GetTrialResult 获取缓存的试算结果。
+	// hit=false 表示缓存未命中。
+	GetTrialResult(ctx context.Context, userID, source, channel, goodsID string, target any) (hit bool, err error)
 }
 
 // redisCacheRepo 基于 go-redis 的 CacheRepository 实现。
@@ -232,4 +241,22 @@ func (r *redisCacheRepo) CheckCrowdMember(ctx context.Context, tagID, userID str
 		return false, fmt.Errorf("cache check crowd member: %w", err)
 	}
 	return ok, nil
+}
+
+// --- 试算结果缓存 ---
+
+func (r *redisCacheRepo) CacheTrialResult(ctx context.Context, userID, source, channel, goodsID string, result any, ttl time.Duration) error {
+	err := redisx.CacheTrialResult(ctx, r.rdb, userID, source, channel, goodsID, result, ttl)
+	if err != nil {
+		return fmt.Errorf("cache trial result: %w", err)
+	}
+	return nil
+}
+
+func (r *redisCacheRepo) GetTrialResult(ctx context.Context, userID, source, channel, goodsID string, target any) (bool, error) {
+	hit, err := redisx.GetTrialResult(ctx, r.rdb, userID, source, channel, goodsID, target)
+	if err != nil {
+		return false, fmt.Errorf("get trial result: %w", err)
+	}
+	return hit, nil
 }

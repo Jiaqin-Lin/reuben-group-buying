@@ -75,11 +75,15 @@ func ReleaseLock(ctx context.Context, rdb *goredis.Client, key, token string) er
 
 // AcquireLockSimple 获取分布式锁（简化版，不返回 token）。
 //
-// 适用于不需要"持有者校验"的场景（如定时任务互斥）。
+// 直接 SETNX，不生成 token——用于锁持有时间远小于 TTL、不会误删他人的场景。
 // ReleaseLockSimple 调用者自行保证只在持有锁时释放。
 func AcquireLockSimple(ctx context.Context, rdb *goredis.Client, key string, ttl time.Duration) (bool, error) {
-	_, acquired, err := AcquireLock(ctx, rdb, key, ttl)
-	return acquired, err
+	ttlSec := max(int64(ttl.Seconds()), 1)
+	ok, err := rdb.SetNX(ctx, key, "1", time.Duration(ttlSec)*time.Second).Result()
+	if err != nil {
+		return false, fmt.Errorf("acquire lock simple: %w", err)
+	}
+	return ok, nil
 }
 
 // ReleaseLockSimple 释放分布式锁（简化版，直接 DEL）。

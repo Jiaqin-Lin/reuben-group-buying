@@ -61,6 +61,7 @@ func newTestSettlementService(t *testing.T) *SettlementService {
 		repository.NewActivityRepo(testDB),
 		repository.NewRedisCacheRepo(testRDB),
 		repository.NewNotifyTaskRepo(testDB),
+		nil, // localCache not needed for tests
 	)
 }
 

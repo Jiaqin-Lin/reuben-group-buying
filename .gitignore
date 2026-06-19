@@ -40,3 +40,7 @@ data/
 
 # Java reference code (read-only, not part of Go project)
 group-shopping/
+
+# Load test artifacts
+loadtest/results/
+loadtest/targets/

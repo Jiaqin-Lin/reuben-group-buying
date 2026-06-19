@@ -55,7 +55,9 @@ func newTestLockService(t *testing.T) *LockService {
 		newTestTrialService(t),
 		repository.NewOrderRepo(testDB),
 		repository.NewActivityRepo(testDB),
-		repository.NewRedisCacheRepo(testRDB),
+		repository.NewRedisCacheRepo(testRDB), nil, // localCache
+			nil, // payGateway
+			nil, // paymentRepo
 		3*time.Second,
 		10*time.Minute,
 	)

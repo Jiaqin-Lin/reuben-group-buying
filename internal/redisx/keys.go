@@ -71,6 +71,14 @@ func TimeoutScanLockKey() string {
 	return fmt.Sprintf("%s:lock:timeout:scanner", prefix)
 }
 
+// --- 试算结果缓存 ---
+
+// TrialResultKey 试算结果缓存的 key。
+// 短 TTL（5-10s），防同一用户短时间重复试算穿透到 DB。
+func TrialResultKey(userID, source, channel, goodsID string) string {
+	return fmt.Sprintf("%s:trial:%s:%s:%s:%s", prefix, userID, source, channel, goodsID)
+}
+
 // --- 动态配置通知 ---
 
 // ConfigChannel 动态配置变更通知的 Redis Pub/Sub 频道名。

@@ -146,6 +146,21 @@ func CacheDel(ctx context.Context, rdb *goredis.Client, key string) error {
 	return nil
 }
 
+// --- 试算结果缓存 ---
+
+// CacheTrialResult 缓存试算结果（短 TTL，防重试穿透）。
+func CacheTrialResult(ctx context.Context, rdb *goredis.Client, userID, source, channel, goodsID string, result any, ttl time.Duration) error {
+	key := TrialResultKey(userID, source, channel, goodsID)
+	return CacheSet(ctx, rdb, key, result, ttl)
+}
+
+// GetTrialResult 获取缓存的试算结果。
+// 返回 hit=false 表示缓存未命中。
+func GetTrialResult(ctx context.Context, rdb *goredis.Client, userID, source, channel, goodsID string, target any) (hit bool, err error) {
+	key := TrialResultKey(userID, source, channel, goodsID)
+	return CacheGet(ctx, rdb, key, target)
+}
+
 // --- 人群标签操作 ---
 
 // AddCrowdMembers 添加人群标签成员（批量 SADD）。

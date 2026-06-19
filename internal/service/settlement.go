@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/reuben/group-buying/internal/cache"
 	"github.com/reuben/group-buying/internal/errcode"
 	"github.com/reuben/group-buying/internal/model"
 	"github.com/reuben/group-buying/internal/repository"
@@ -28,6 +29,7 @@ type SettlementService struct {
 	activityRepo repository.ActivityRepository
 	cacheRepo    repository.CacheRepository
 	notifyRepo   repository.NotifyTaskRepository
+	localCache   *cache.LocalCache
 }
 
 // NewSettlementService 构造函数。
@@ -36,12 +38,14 @@ func NewSettlementService(
 	activityRepo repository.ActivityRepository,
 	cacheRepo repository.CacheRepository,
 	notifyRepo repository.NotifyTaskRepository,
+	localCache *cache.LocalCache,
 ) *SettlementService {
 	return &SettlementService{
 		orderRepo:    orderRepo,
 		activityRepo: activityRepo,
 		cacheRepo:    cacheRepo,
 		notifyRepo:   notifyRepo,
+		localCache:   localCache,
 	}
 }
 
@@ -113,8 +117,8 @@ func (s *SettlementService) Settle(ctx context.Context, req SettlementRequest) (
 		return nil, &SettlementError{Code: errcode.CodeOrderTimeInvalid, Err: fmt.Errorf("team %s expired at %v", team.TeamID, team.ValidEnd)}
 	}
 
-	// 5. 查活动（获取 take_limit 和 TTL）
-	activity, err := s.activityRepo.FindActivityByID(ctx, order.ActivityID)
+	// 5. 查活动（本地缓存 → DB fallback）
+	activity, err := s.getActivity(ctx, order.ActivityID)
 	if err != nil {
 		return nil, fmt.Errorf("settlement: find activity: %w", err)
 	}
@@ -270,6 +274,16 @@ func (s *SettlementService) createNotifyTask(ctx context.Context, settleResult *
 	}
 
 	slog.InfoContext(ctx, "settlement: notify task created", "team_id", settleResult.TeamID, "uuid", task.UUID)
+}
+
+// getActivity 查活动（本地缓存 → DB fallback）。
+func (s *SettlementService) getActivity(ctx context.Context, activityID int64) (*model.Activity, error) {
+	if s.localCache != nil {
+		if a, ok := s.localCache.GetActivity(activityID); ok {
+			return a, nil
+		}
+	}
+	return s.activityRepo.FindActivityByID(ctx, activityID)
 }
 
 // buildNotifyUUID 构建通知任务 UUID（用于幂等去重）。
