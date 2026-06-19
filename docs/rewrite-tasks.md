@@ -178,24 +178,38 @@
 
 ---
 
-## Phase 7：退单（Refund）
+## Phase 7：退单（Refund）✅
 
 > **注意**：退款不退 take_limit 次数。支付成功即消耗。
 
-- [ ] **7.1** 实现退单（简化为条件判断 + 提前返回，不用责任链）
-- [ ] **7.2** 实现三种退单策略：
-  - **未支付退单**：更新 orders status=REFUNDED, 退名额(release stock), 更新 teams.lock_count-1
-  - **已支付未成团退单**：更新 orders status=REFUNDED, 退名额, 更新 teams.lock_count-1 和 complete_count-1（不退 take_limit）
-  - **已成团退单**：更新 orders status=REFUNDED, 更新 teams 状态为 COMPLETE_REFUND（不退 take_limit）
-- [ ] **7.3** 退单接口 HTTP handler：`POST /api/v1/trade/refund`
-- [ ] **7.4** 退单单元测试
+- [x] **7.1** 实现退单（`service/refund.go`，~260 行）：
+  - 一个 `Refund()` 主函数 + if-else 分发三种场景（不用责任链+策略模式）
+  - 幂等：order.Status==Refunded → 直接返回
+  - 并发保护：`UpdateOrderStatusWithCheck`（WHERE status=from）防重复退单，`RefundCompleteTeam` 用 SELECT FOR UPDATE 序列化同团并发退款
+  - 新增错误码 `CodeRefundStateInvalid = "E0107"`
+  - 新增 3 个 Repository 方法：`UpdateOrderStatusWithCheck`, `RefundTeamForming`, `RefundCompleteTeam`
+- [x] **7.2** 实现三种退单场景：
+  - **未支付退单（unpaidRefund）**：order Locked→Refunded, team lock_count-1, 关 payment（最佳努力）, 释放 Redis 名额, 建 notify_task (trade_unpaid_refund)
+  - **已支付未成团退单（paidRefund）**：order Paid→Refunded, team lock_count-1 & complete_count-1, 释放 Redis 名额, 建 notify_task (trade_paid_refund)
+  - **已成团退单（paidTeamRefund）**：order Paid→Refunded, team completeCount>1→CompleteRefunded(3) / =1→Failed(2), 不释放名额, 建 notify_task (trade_paid_team_refund)
+- [x] **7.3** 退单接口 HTTP handler：`POST /api/v1/trade/refund`（`handler/trade.go`）
+- [x] **7.4** 退单单元测试（9 个测试全部通过，-race 通过）：
+  - 未支付退、已支付退、已成团退（多人+最后一人）
+  - 幂等退、并发退（5 goroutines + 2 goroutines 已成团并发）
+  - 订单不存在、用户不匹配、无效状态
+
+> **与 Java 版关键差异**：
+> - 不用责任链+策略模式，改为一个函数 + if-else 分发。
+> - Redis 名额释放改为同步（Java 通过 MQ listener 异步），ReleaseStock Lua 已是幂等的。
+> - 已成团退单用 SELECT FOR UPDATE 序列化（非两步 WHERE 条件），更安全可靠。
+> - 不用分布式锁，DB 条件 WHERE 子句足够。
 
 ---
 
 ## Phase 8：回调通知（Notify Task）
 
 - [ ] **8.1** 实现 HTTP 回调：POST 到 notify_url，带 body（teamId + outTradeNoList）
-- [ ] **8.2** 实现 MQ 回调（暂用 Redis Pub/Sub 或 mock，后续接真实 MQ）
+- [ ] **8.2** 实现 MQ 回调
 - [ ] **8.3** 实现回调重试机制（成功 → status=1, 失败 → retry_count+1)
 - [ ] **8.4** 定时扫描未完成任务（游标分页，每次限量处理）
 - [ ] **8.5** 回调任务单元测试

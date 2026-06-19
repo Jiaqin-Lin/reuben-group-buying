@@ -15,11 +15,20 @@ import (
 type TradeHandler struct {
 	lockSvc       *service.LockService
 	settlementSvc *service.SettlementService
+	refundSvc     *service.RefundService
 }
 
 // NewTradeHandler 构造函数。
-func NewTradeHandler(lockSvc *service.LockService, settlementSvc *service.SettlementService) *TradeHandler {
-	return &TradeHandler{lockSvc: lockSvc, settlementSvc: settlementSvc}
+func NewTradeHandler(
+	lockSvc *service.LockService,
+	settlementSvc *service.SettlementService,
+	refundSvc *service.RefundService,
+) *TradeHandler {
+	return &TradeHandler{
+		lockSvc:       lockSvc,
+		settlementSvc: settlementSvc,
+		refundSvc:     refundSvc,
+	}
 }
 
 // LockOrder 锁单接口 — POST /api/v1/trade/lock。
@@ -73,6 +82,33 @@ func (h *TradeHandler) Settlement(c *gin.Context) {
 			response.FailWithMsg(c, settleErr.ErrorCode(), err.Error())
 		} else {
 			slog.ErrorContext(c.Request.Context(), "settlement: unexpected error", "error", err)
+			response.Fail(c, errcode.CodeUnknownErr)
+		}
+		return
+	}
+
+	response.Success(c, result)
+}
+
+// Refund 退单接口 — POST /api/v1/trade/refund。
+//
+// 请求体：{ "user_id", "out_trade_no" }
+// 响应：{ "code": "0000", "info": "成功", "data": { "order_id", "out_trade_no", "team_id", "refund_type", ... } }
+func (h *TradeHandler) Refund(c *gin.Context) {
+	var req service.RefundRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		slog.WarnContext(c.Request.Context(), "refund: bind json failed", "error", err)
+		response.Fail(c, errcode.CodeInvalidParam)
+		return
+	}
+
+	result, err := h.refundSvc.Refund(c.Request.Context(), req)
+	if err != nil {
+		var refundErr *service.RefundError
+		if errors.As(err, &refundErr) {
+			response.FailWithMsg(c, refundErr.ErrorCode(), err.Error())
+		} else {
+			slog.ErrorContext(c.Request.Context(), "refund: unexpected error", "error", err)
 			response.Fail(c, errcode.CodeUnknownErr)
 		}
 		return

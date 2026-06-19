@@ -27,6 +27,7 @@ const (
 	CodeOrderNotFound       = "E0104" // 不存在的外部交易单号或用户已退单
 	CodeChannelBlacklisted  = "E0105" // SC渠道黑名单拦截
 	CodeOrderTimeInvalid    = "E0106" // 订单交易时间不在拼团有效时间范围内
+	CodeRefundStateInvalid  = "E0107" // 订单状态不允许退单
 
 	CodeRateLimit = "E0200" // 请求过于频繁
 )
@@ -52,6 +53,7 @@ var codeMessages = map[string]string{
 	CodeOrderNotFound:       "不存在的外部交易单号或用户已退单",
 	CodeChannelBlacklisted:  "SC渠道黑名单拦截",
 	CodeOrderTimeInvalid:    "订单交易时间不在拼团有效时间范围内",
+	CodeRefundStateInvalid:  "订单状态不允许退单",
 	CodeRateLimit:           "请求过于频繁",
 }
 

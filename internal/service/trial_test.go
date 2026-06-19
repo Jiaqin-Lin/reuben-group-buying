@@ -60,6 +60,7 @@ func TestMain(m *testing.M) {
 	seedTrialTestData(testDB)
 	seedLockTestData(testDB)
 	seedSettlementTestData(testDB)
+	seedRefundTestData(testDB)
 	rdb.FlushDB(ctx).Err()
 
 	code := m.Run()

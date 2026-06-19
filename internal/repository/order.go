@@ -62,6 +62,11 @@ type OrderRepository interface {
 	// 用于支付回调（0→1）或退单（0/1→2）。
 	UpdateOrderStatus(ctx context.Context, orderID string, status int8) error
 
+	// UpdateOrderStatusWithCheck 条件更新订单状态，带当前状态检查。
+	// SQL: UPDATE orders SET status=? WHERE order_id=? AND status=?
+	// RowsAffected==0 返回错误，用于并发保护和幂等。
+	UpdateOrderStatusWithCheck(ctx context.Context, orderID string, fromStatus, toStatus int8) error
+
 	// UpdateTeamCounters 原子更新团计数器。
 	// lockDelta/compleDelta 为增量值（+1 或 -1），用 gorm.Expr 保证原子操作。
 	UpdateTeamCounters(ctx context.Context, teamID string, lockDelta, completeDelta int) error
@@ -69,6 +74,19 @@ type OrderRepository interface {
 	// UpdateTeamStatus 更新团状态。
 	// 成团（0→1）、失败（0→2）、成团含退款（1→3）。
 	UpdateTeamStatus(ctx context.Context, teamID string, status int8) error
+
+	// RefundTeamForming 退单时更新 forming 团的计数器（带状态检查）。
+	// SQL: UPDATE teams SET lock_count=lock_count+?, complete_count=complete_count+?
+	//      WHERE team_id=? AND status=0
+	// 比 UpdateTeamCounters 多了 status=0 条件，防止退单时团已发生变化。
+	RefundTeamForming(ctx context.Context, teamID string, lockDelta, completeDelta int) error
+
+	// RefundCompleteTeam 退单时更新已成团的计数器并转换团状态。
+	// 根据 completeCount 判断团的新状态：
+	//   - completeCount > 1 → status=3 (CompleteRefunded)
+	//   - completeCount == 1 → status=2 (Failed，最后一人退单)
+	// 返回新的团状态。
+	RefundCompleteTeam(ctx context.Context, teamID string, lockDelta, completeDelta int) (int8, error)
 
 	// SettleOrder 结算订单（事务内完成订单状态更新+团进度更新+成团判断）。
 	// 流程：SELECT FOR UPDATE team → 校验 → UPDATE order status=1 → UPDATE team.complete_count+1 → 判断成团。
@@ -291,6 +309,97 @@ func (r *orderRepo) UpdateTeamStatus(ctx context.Context, teamID string, status 
 		return fmt.Errorf("update team status %s: %w", teamID, gorm.ErrRecordNotFound)
 	}
 	return nil
+}
+
+// UpdateOrderStatusWithCheck 条件更新订单状态，带当前状态检查。
+// RowsAffected==0 表示不存在该状态下的订单（可能已被并发修改）。
+func (r *orderRepo) UpdateOrderStatusWithCheck(ctx context.Context, orderID string, fromStatus, toStatus int8) error {
+	result := r.db.WithContext(ctx).
+		Model(&model.Order{}).
+		Where("order_id = ? AND status = ?", orderID, fromStatus).
+		Update("status", toStatus)
+	if result.Error != nil {
+		return fmt.Errorf("update order status with check %s: %w", orderID, result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("update order status with check %s: %w", orderID, gorm.ErrRecordNotFound)
+	}
+	return nil
+}
+
+// RefundTeamForming 退单时更新 forming 团的计数器。
+// 带 status=0 条件，防止退单时团已经变成其他状态。
+func (r *orderRepo) RefundTeamForming(ctx context.Context, teamID string, lockDelta, completeDelta int) error {
+	result := r.db.WithContext(ctx).
+		Model(&model.Team{}).
+		Where("team_id = ? AND status = ?", teamID, model.TeamStatusForming).
+		Updates(map[string]any{
+			"lock_count":     gorm.Expr("lock_count + ?", lockDelta),
+			"complete_count": gorm.Expr("complete_count + ?", completeDelta),
+		})
+	if result.Error != nil {
+		return fmt.Errorf("refund team forming %s: %w", teamID, result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("refund team forming %s: team not forming or not found", teamID)
+	}
+	return nil
+}
+
+// RefundCompleteTeam 退单时更新已成团的计数器并转换团状态。
+//
+// 分两种情况：
+//  1. 团剩余人数 > 1 → status=3 (CompleteRefunded)，团还活着
+//  2. 团剩余人数 = 1 → status=2 (Failed)，最后一人退单，团解散
+//
+// 使用事务 + SELECT FOR UPDATE 序列化并发请求，确保两个 goroutine
+// 同时退同一团的成员时，一个看到原始 complete_count 并匹配 >1 分支，
+// 另一个看到减 1 后的 complete_count 并匹配 =1 分支。
+func (r *orderRepo) RefundCompleteTeam(ctx context.Context, teamID string, lockDelta, completeDelta int) (int8, error) {
+	var newStatus int8
+
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// SELECT FOR UPDATE 锁行，序列化同团的并发退款
+		var team model.Team
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("team_id = ?", teamID).
+			First(&team).Error; err != nil {
+			return fmt.Errorf("find team for update: %w", err)
+		}
+
+		// 校验团状态
+		if team.Status != model.TeamStatusComplete && team.Status != model.TeamStatusCompleteRefunded {
+			return fmt.Errorf("team %s status is %d, expected Complete(1) or CompleteRefunded(3)", teamID, team.Status)
+		}
+
+		newCompleteCount := team.CompleteCount + completeDelta
+		newLockCount := team.LockCount + lockDelta
+
+		// 根据锁行读到的 complete_count 决定新状态
+		if newCompleteCount > 0 {
+			newStatus = model.TeamStatusCompleteRefunded
+		} else {
+			newStatus = model.TeamStatusFailed
+		}
+
+		result := tx.Model(&model.Team{}).
+			Where("team_id = ?", teamID).
+			Updates(map[string]any{
+				"lock_count":     newLockCount,
+				"complete_count": newCompleteCount,
+				"status":         newStatus,
+			})
+		if result.Error != nil {
+			return fmt.Errorf("update team: %w", result.Error)
+		}
+		return nil
+	})
+
+	if err != nil {
+		return 0, fmt.Errorf("refund complete team %s: %w", teamID, err)
+	}
+
+	return newStatus, nil
 }
 
 // SettleOrder 结算订单（事务内完成）。
