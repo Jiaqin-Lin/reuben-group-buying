@@ -64,13 +64,21 @@ func main() {
 	activityRepo := repository.NewActivityRepo(db)
 	productRepo := repository.NewProductRepo(db)
 	crowdRepo := repository.NewCrowdRepo(db)
+	orderRepo := repository.NewOrderRepo(db)
+	_ = repository.NewPaymentRepo(db) // Phase 6 结算用
 	cacheRepo := repository.NewRedisCacheRepo(rdb)
 
 	// 6. 初始化 Service 层
 	trialSvc := service.NewTrialService(activityRepo, productRepo, cacheRepo, crowdRepo)
+	lockSvc := service.NewLockService(
+		trialSvc, orderRepo, activityRepo, cacheRepo,
+		time.Duration(cfg.App.OrderLockTTL)*time.Second,
+		time.Duration(cfg.App.LockResultTTL)*time.Second,
+	)
 
 	// 7. 初始化 Handler 层
 	indexHandler := handler.NewIndexHandler(trialSvc)
+	tradeHandler := handler.NewTradeHandler(lockSvc)
 
 	// 8. 初始化 Gin 路由
 	gin.SetMode(cfg.Server.Mode)
@@ -84,6 +92,7 @@ func main() {
 	// 10. 注册路由
 	router.GET("/health", healthHandler(db, rdb))
 	router.POST("/api/v1/trial", indexHandler.Trial)
+	router.POST("/api/v1/trade/lock", tradeHandler.LockOrder)
 
 	// 8. 启动 HTTP 服务（优雅退出）
 	srv := &http.Server{

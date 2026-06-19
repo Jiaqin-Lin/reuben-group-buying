@@ -163,7 +163,7 @@ func (r *redisCacheRepo) CacheLockResult(ctx context.Context, userID, outTradeNo
 	// redisx.CacheSet 内部会 json.Marshal，所以传 string(result) 会被双重编码。
 	// 直接用 rdb.Set 存储原始 JSON 字节。
 	ttlSec := max(ttl.Seconds(), 1)
-	err := r.rdb.Set(ctx, key, result, time.Duration(ttlSec)*time.Second).Err()
+	err := r.rdb.Set(ctx, key, string(result), time.Duration(ttlSec)*time.Second).Err()
 	if err != nil {
 		return fmt.Errorf("cache lock result: %w", err)
 	}

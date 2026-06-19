@@ -123,28 +123,35 @@
 
 ---
 
-## Phase 5：锁单（Lock Order）
+## Phase 5：锁单（Lock Order）✅
 
-- [ ] **5.1** 实现锁单主流程（`service/lock.go`）：
-  1. 参数校验
-  2. outTradeNo 幂等检查
-  3. 同团复用检查（有 teamId 时）
-  4. 分布式锁
-  5. 调用试算获取价格
-  6. 名额占用（Redis Lua）
-  7. 写入 orders & teams（DB 事务）
-  8. 缓存锁单结果
-  9. 释放分布式锁
-- [ ] **5.2** 分两条路径实现：
-  - **新建团**：teamId 为空 → 生成 teamId → 建团 + 首单
-  - **加入团**：teamId 非空 → 加团 + 增量更新
-- [ ] **5.3** 异常处理：
-  - DuplicateKey → 返回已有订单
-  - 名额满 → 返回"团已满"
-  - Redis 异常 → 确认 token 存在 or 快速失败
-- [ ] **5.4** 锁单接口 HTTP handler：`POST /api/v1/trade/lock`
-- [ ] **5.5** 锁单单元测试（含并发测试、幂等测试）
-- [ ] **5.6** 锁单集成测试（真实 MySQL + Redis）
+- [x] **5.1** 实现锁单主流程（`service/lock.go`，约 260 行）：
+  1. 幂等检查（缓存 → DB，三层防护：缓存/分布式锁/DB UK）
+  2. 分布式锁（`bgm:lock:order:{userId}:{outTradeNo}`，3s TTL）
+  3. Double-check 缓存（获取锁后再次查询，防并发窗口）
+  4. 试算定价（复用 `TrialService.Trial()`，含活动校验+人群标签）
+  5. 限购检查（只查已支付订单数 `CountPaidOrdersByUserActivity`，**不 +1**）
+  6. 名额占用（Redis Lua `TryOccupyStock`）
+  7. 写库（`CreateTeamWithOrder` 或 `JoinTeamWithOrder`，事务内）
+  8. 缓存结果（`CacheLockResult`，10min TTL）
+  9. defer 释放分布式锁
+- [x] **5.2** 分两条路径实现：
+  - **新建团**：teamId 为空 → 生成 8 位 teamId + 12 位 orderId → 建团 + 首单（一个事务）
+  - **加入团**：teamId 非空 → 校验团存在+forming+未过期 → Redis 占名额 → `JoinTeamWithOrder`（SELECT FOR UPDATE + 原子 incr lock_count + insert order）
+- [x] **5.3** 异常处理：
+  - Redis 满标 → `CodeStockInsufficient` (E0008)
+  - DB 团满（lock_count >= target_count）→ 释放名额 + 标记满标 + `CodeTeamFull` (E0006)
+  - 限购超限 → `CodeTakeLimitReached` (E0103)，注意只查 status=Paid
+  - 人群限制 → `CodeCrowdBlocked` (E0007)
+  - DB 失败 → 释放 Redis 名额（补偿）
+- [x] **5.4** 锁单接口 HTTP handler：`POST /api/v1/trade/lock`（`handler/trade.go`）
+- [x] **5.5** 锁单单元测试（11 个测试：新建团/加入团/幂等缓存/幂等DB/活动过期/限购/团满/团不存在/并发/NotifyURL/活动不匹配/团过期）
+- [x] **5.6** 锁单集成测试（需 Docker MySQL + Redis，与 trial_test.go 共享 TestMain）
+
+> **与 Java 版关键差异**：
+> - take_limit 锁单时只做 DB 软检查（查已支付订单数），**不递增**。真正 +1 在结算时。
+> - 无责任链（ActivityValidityCheckNode + UserTakeLimitCheckNode），改为 if-else。
+> - 无热活动优化（isHotTeamFull），Lua 脚本已足够。
 
 ---
 
@@ -153,10 +160,11 @@
 - [ ] **6.1** 实现结算主流程（`service/settlement.go`）：
   1. 校验订单（outTradeNo + userId 查询 orders）
   2. 更新 orders 状态为 PAID
-  3. 更新 teams.complete_count + 1
-  4. 判断是否成团（complete_count == target_count）
-  5. 成团后创建 notify_task
-  6. 执行回调通知
+  3. **Redis 原子 incr take_limit 计数**（`TakeLimitCheckAndIncr`，锁单时没加，这里加）
+  4. 更新 teams.complete_count + 1
+  5. 判断是否成团（complete_count == target_count）
+  6. 成团后创建 notify_task
+  7. 执行回调通知
 - [ ] **6.2** 结算接口 HTTP handler：`POST /api/v1/trade/settlement`
 - [ ] **6.3** 结算单元测试
 
@@ -164,11 +172,13 @@
 
 ## Phase 7：退单（Refund）
 
+> **注意**：退款不退 take_limit 次数。支付成功即消耗。
+
 - [ ] **7.1** 实现退单（简化为条件判断 + 提前返回，不用责任链）
 - [ ] **7.2** 实现三种退单策略：
   - **未支付退单**：更新 orders status=REFUNDED, 退名额(release stock), 更新 teams.lock_count-1
-  - **已支付未成团退单**：更新 orders status=REFUNDED, 退名额, 更新 teams.lock_count-1 和 complete_count-1
-  - **已成团退单**：更新 orders status=REFUNDED, 更新 teams 状态为 COMPLETE_REFUND
+  - **已支付未成团退单**：更新 orders status=REFUNDED, 退名额, 更新 teams.lock_count-1 和 complete_count-1（不退 take_limit）
+  - **已成团退单**：更新 orders status=REFUNDED, 更新 teams 状态为 COMPLETE_REFUND（不退 take_limit）
 - [ ] **7.3** 退单接口 HTTP handler：`POST /api/v1/trade/refund`
 - [ ] **7.4** 退单单元测试
 

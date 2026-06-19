@@ -58,6 +58,7 @@ func TestMain(m *testing.M) {
 
 	// 准备种子数据
 	seedTrialTestData(testDB)
+	seedLockTestData(testDB)
 	rdb.FlushDB(ctx).Err()
 
 	code := m.Run()
