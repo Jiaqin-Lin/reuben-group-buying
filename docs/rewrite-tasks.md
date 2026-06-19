@@ -35,24 +35,27 @@
 │   │   ├── notify.go           # 回调通知
 │   │   └── timeout.go          # 超时退单
 │   ├── repository/             # 数据访问层
-│   │   ├── activity.go         # 活动/折扣/sc_sku_activity 查询
-│   │   ├── order.go            # 订单 CRUD（order_list + order）
-│   │   ├── sku.go              # 商品查询
+│   │   ├── activity.go         # 活动/折扣/活动-商品映射 查询
+│   │   ├── order.go            # 订单 CRUD（orders + teams）
+│   │   ├── product.go          # 商品查询
 │   │   ├── notify_task.go      # 回调任务 CRUD
+│   │   ├── crowd.go            # 人群标签 CRUD
+│   │   ├── payment.go          # 支付 CRUD
 │   │   └── cache.go            # 所有缓存读写操作
 │   ├── model/                  # 数据模型（PO/VO 统一放这里）
 │   ├── redisx/                 # Redis 操作封装
-│   │   ├── stock.go            # 名额占用/释放 Lua 脚本
+│   │   ├── stock.go            # 名额占用/释放（go:embed Lua）
 │   │   ├── lock.go             # 分布式锁
-│   │   └── cache.go            # 缓存读写
+│   │   ├── cache.go            # 缓存读写
+│   │   ├── keys.go             # Redis Key 定义
+│   │   └── lua/                # Lua 脚本文件
+│   │       ├── occupy_stock.lua
+│   │       ├── release_stock.lua
+│   │       └── take_limit_incr.lua
 │   ├── pay/                    # 支付网关对接（新增）
 │   │   ├── gateway.go          # 支付接口定义
 │   │   └── mock.go             # Mock 实现
 │   └── middleware/             # 中间件（限流、日志、traceID）
-├── scripts/lua/                # Lua 脚本文件（从 Java 代码中提取）
-│   ├── occupy_stock.lua
-│   ├── release_stock.lua
-│   └── check_stock.lua
 ├── migrations/                 # 数据库迁移文件
 ├── Dockerfile
 ├── docker-compose.yml
@@ -68,8 +71,8 @@
 - [x] **1.2** Redis 客户端初始化（推荐 go-redis）→ `internal/infra/redis/redis.go`
 - [x] **1.3** 配置管理（环境变量 + YAML 配置文件）→ `internal/config/config.go` + `config.yaml`
 - [x] **1.4** 日志框架（结构化日志，含 traceID）→ `internal/infra/log/log.go`
-- [x] **1.5** 统一响应格式（对标 Java Response.java）→ `internal/response.go`
-- [x] **1.6** 统一错误码（对标 Java ResponseCode.java）→ `internal/errors.go`
+- [x] **1.5** 统一响应格式（对标 Java Response.java）→ `internal/response/response.go`
+- [x] **1.6** 统一错误码（对标 Java ResponseCode.java）→ `internal/errcode/errcode.go`
 - [x] **1.7** HTTP 中间件：traceID 注入、请求日志、panic recover → `internal/middleware/*/`
 
 ---
@@ -93,7 +96,7 @@
 
 ## Phase 3：Redis 层 ✅
 
-- [x] **3.1** 把 Java 代码中的 Lua 脚本提取到独立 `.lua` 文件
+- [x] **3.1** 把 Java 代码中的 Lua 脚本提取到独立文件（go:embed 嵌入）
   - `internal/redisx/lua/occupy_stock.lua` — 原子占用名额（full 哨兵 + 幂等 + TTL 控制）
   - `internal/redisx/lua/release_stock.lua` — 原子释放名额（SREM + 解除满标）
   - `internal/redisx/lua/take_limit_incr.lua` — 原子限购检查+递增（冷启动安全）
@@ -106,17 +109,17 @@
 
 ---
 
-## Phase 4：试算（Trial）
+## Phase 4：试算（Trial） ✅
 
-- [ ] **4.1** 实现折扣计算逻辑（直减 ZJ、满减 MJ、折扣 ZK、N 元购）
-- [ ] **4.2** 实现试算主流程：
-  1. 查 sc_sku_activity → 获取 activityId
-  2. 查 group_buy_activity → 校验状态
-  3. 查 group_buy_discount → 计算优惠
-  4. 查 sku → 获取商品信息
-- [ ] **4.3** 实现人群标签过滤（可选）
-- [ ] **4.4** 试算接口 HTTP handler：`POST /api/v1/trial`
-- [ ] **4.5** 试算单元测试（覆盖 4 种折扣类型）
+- [x] **4.1** 实现折扣计算逻辑（直减 ZJ、满减 MJ、折扣 ZK、N 元购）
+- [x] **4.2** 实现试算主流程：
+  1. 查 activity_products → 获取 activityId
+  2. 查 activities + discounts（JOIN）→ 校验状态
+  3. 计算折扣（switch planType: ZJ/MJ/ZK/N）
+  4. 查 products → 获取商品信息
+- [x] **4.3** 实现人群标签过滤（可选）
+- [x] **4.4** 试算接口 HTTP handler：`POST /api/v1/trial`
+- [x] **4.5** 试算单元测试（覆盖 4 种折扣类型）
 
 ---
 
@@ -129,7 +132,7 @@
   4. 分布式锁
   5. 调用试算获取价格
   6. 名额占用（Redis Lua）
-  7. 写入订单 & 团表（DB 事务）
+  7. 写入 orders & teams（DB 事务）
   8. 缓存锁单结果
   9. 释放分布式锁
 - [ ] **5.2** 分两条路径实现：
@@ -148,9 +151,9 @@
 ## Phase 6：结算（Settlement — 支付回调）
 
 - [ ] **6.1** 实现结算主流程（`service/settlement.go`）：
-  1. 校验订单（outTradeNo + userId 查询）
-  2. 更新 order_list 状态为 COMPLETE
-  3. 更新 order complete_count + 1
+  1. 校验订单（outTradeNo + userId 查询 orders）
+  2. 更新 orders 状态为 PAID
+  3. 更新 teams.complete_count + 1
   4. 判断是否成团（complete_count == target_count）
   5. 成团后创建 notify_task
   6. 执行回调通知
@@ -161,11 +164,11 @@
 
 ## Phase 7：退单（Refund）
 
-- [ ] **7.1** 实现退单责任链（简化版：条件判断 + 提前返回）
+- [ ] **7.1** 实现退单（简化为条件判断 + 提前返回，不用责任链）
 - [ ] **7.2** 实现三种退单策略：
-  - **未支付退单**：更新订单 status=REFUND, 退名额(release stock), 更新团 lock_count-1
-  - **已支付未成团退单**：更新订单 status=REFUND, 退名额, 更新团 lock_count-1 和 complete_count-1
-  - **已成团退单**：更新订单 status=REFUND, 更新团状态为 COMPLETE_REFUND
+  - **未支付退单**：更新 orders status=REFUNDED, 退名额(release stock), 更新 teams.lock_count-1
+  - **已支付未成团退单**：更新 orders status=REFUNDED, 退名额, 更新 teams.lock_count-1 和 complete_count-1
+  - **已成团退单**：更新 orders status=REFUNDED, 更新 teams 状态为 COMPLETE_REFUND
 - [ ] **7.3** 退单接口 HTTP handler：`POST /api/v1/trade/refund`
 - [ ] **7.4** 退单单元测试
 
@@ -183,7 +186,7 @@
 
 ## Phase 9：超时退单定时任务
 
-- [ ] **9.1** 实现超时扫描（查询 status=0 且超过 valid_end_time 的订单）
+- [ ] **9.1** 实现超时扫描（查询 orders.status=0 且 teams.valid_end < NOW()）
 - [ ] **9.2** 批量触发退单（每个超时订单调用退单服务）
 - [ ] **9.3** 定时任务调度（Go cron 库或 time.Ticker）
 - [ ] **9.4** 多实例防重复（分布式锁或 DB 抢占）
@@ -194,10 +197,10 @@
 
 > Java 版 DCC 的坑：用 `BeanPostProcessor` + 反射 + `@DCCValue` 注解 + Fastjson 反序列化来做配置热更新，极度复杂。Go 版直接读 Redis/DB 更新本地变量即可。
 
-- [ ] **10.1** 启动时预加载活动/折扣/SKU 到本地缓存（sync.Map 或 go-cache）
+- [ ] **10.1** 启动时预加载活动/折扣/商品到本地缓存（sync.Map 或 go-cache）
 - [ ] **10.2** 配置热更新接口：`POST /api/v1/admin/config/reload`，从 DB/Redis 重新加载本地缓存（对标 Java DCC，但实现只需几十行）
 - [ ] **10.3** 试算结果短 TTL 缓存（3~10 秒，key=`trial:{userId}:{outTradeNo}`，防重试穿透）
-- [ ] **10.4** 报价上下文缓存（活动+折扣+SKU+渠道映射，key=`bgm:quote:{source}:{channel}:{goodsId}`，分钟级 TTL）
+- [ ] **10.4** 报价上下文缓存（活动+折扣+商品+渠道映射，key=`bgm:quote:{source}:{channel}:{goodsId}`，分钟级 TTL）
 - [ ] **10.5** 压测验证（wrk / vegeta），目标 QPS > 5000（锁单）、> 20000（试算）
 
 ---

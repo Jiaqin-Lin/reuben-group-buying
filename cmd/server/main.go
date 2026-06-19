@@ -15,12 +15,15 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/reuben/group-buying/internal/config"
+	"github.com/reuben/group-buying/internal/handler"
 	"github.com/reuben/group-buying/internal/infra/log"
 	"github.com/reuben/group-buying/internal/infra/mysql"
 	"github.com/reuben/group-buying/internal/infra/redis"
 	"github.com/reuben/group-buying/internal/middleware/logging"
 	"github.com/reuben/group-buying/internal/middleware/recovery"
 	"github.com/reuben/group-buying/internal/middleware/tracing"
+	"github.com/reuben/group-buying/internal/repository"
+	"github.com/reuben/group-buying/internal/service"
 )
 
 func main() {
@@ -46,8 +49,6 @@ func main() {
 		logger.Error("init mysql", "error", err)
 		os.Exit(1)
 	}
-	_ = db // Phase 2 开始使用
-
 	// 4. 初始化 Redis
 	rdb, err := redis.New(redis.Config{
 		Addr:     cfg.Redis.Addr,
@@ -58,19 +59,31 @@ func main() {
 		logger.Error("init redis", "error", err)
 		os.Exit(1)
 	}
-	_ = rdb // Phase 3 开始使用
 
-	// 5. 初始化 Gin 路由
+	// 5. 初始化 Repository 层
+	activityRepo := repository.NewActivityRepo(db)
+	productRepo := repository.NewProductRepo(db)
+	crowdRepo := repository.NewCrowdRepo(db)
+	cacheRepo := repository.NewRedisCacheRepo(rdb)
+
+	// 6. 初始化 Service 层
+	trialSvc := service.NewTrialService(activityRepo, productRepo, cacheRepo, crowdRepo)
+
+	// 7. 初始化 Handler 层
+	indexHandler := handler.NewIndexHandler(trialSvc)
+
+	// 8. 初始化 Gin 路由
 	gin.SetMode(cfg.Server.Mode)
 	router := gin.New()
 
-	// 6. 注册全局中间件（按顺序）
+	// 9. 注册全局中间件（按顺序）
 	router.Use(tracing.Middleware())
 	router.Use(logging.Middleware(logger))
 	router.Use(recovery.Middleware(logger))
 
-	// 7. 注册路由
+	// 10. 注册路由
 	router.GET("/health", healthHandler(db, rdb))
+	router.POST("/api/v1/trial", indexHandler.Trial)
 
 	// 8. 启动 HTTP 服务（优雅退出）
 	srv := &http.Server{
