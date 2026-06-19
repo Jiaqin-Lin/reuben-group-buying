@@ -11,6 +11,7 @@ import (
 
 	"github.com/reuben/group-buying/internal/errcode"
 	"github.com/reuben/group-buying/internal/model"
+	"github.com/reuben/group-buying/internal/pay"
 	"github.com/reuben/group-buying/internal/repository"
 )
 
@@ -58,6 +59,7 @@ func newTestRefundService(t *testing.T) *RefundService {
 		repository.NewPaymentRepo(testDB),
 		repository.NewRedisCacheRepo(testRDB),
 		repository.NewNotifyTaskRepo(testDB),
+		pay.NewMock(),
 	)
 }
 

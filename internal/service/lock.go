@@ -344,9 +344,9 @@ func (s *LockService) createPayment(ctx context.Context, result *LockResult) (st
 	payURL := payResult.PayURL
 	payment := &model.Payment{
 		OrderID:    result.OrderID,
-			OutTradeNo: result.OutTradeNo,
-			UserID:     result.UserID,
-			TeamID:     result.TeamID,
+		OutTradeNo: result.OutTradeNo,
+		UserID:     result.UserID,
+		TeamID:     result.TeamID,
 		Amount:     result.PayPrice,
 		Subject:    "拼团订单",
 		PayURL:     &payURL,

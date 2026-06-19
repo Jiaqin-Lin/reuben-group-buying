@@ -251,8 +251,8 @@ func (s *SettlementService) createNotifyTask(ctx context.Context, settleResult *
 	}
 
 	payload, _ := json.Marshal(map[string]any{
-		"teamId":          settleResult.TeamID,
-		"outTradeNoList":  outTradeNoList,
+		"teamId":         settleResult.TeamID,
+		"outTradeNoList": outTradeNoList,
 	})
 
 	category := model.NotifyCategorySettlement

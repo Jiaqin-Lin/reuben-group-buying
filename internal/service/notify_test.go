@@ -229,7 +229,7 @@ func TestNotifyMQ(t *testing.T) {
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	<-ready // 等待订阅就绪
+	<-ready                           // 等待订阅就绪
 	time.Sleep(50 * time.Millisecond) // 给 Redis 一点时间
 
 	target := channel

@@ -114,11 +114,11 @@ type TimeoutOrder struct {
 
 // 业务错误（哨兵错误，service 层判断用）
 var (
-	ErrTeamFull     = fmt.Errorf("team is full")
-	ErrOrderDup     = fmt.Errorf("order duplicate")
-	ErrTeamDup      = fmt.Errorf("team duplicate")
+	ErrTeamFull       = fmt.Errorf("team is full")
+	ErrOrderDup       = fmt.Errorf("order duplicate")
+	ErrTeamDup        = fmt.Errorf("team duplicate")
 	ErrTeamNotForming = fmt.Errorf("team is not forming")
-	ErrTeamExpired  = fmt.Errorf("team has expired")
+	ErrTeamExpired    = fmt.Errorf("team has expired")
 	ErrOrderNotLocked = fmt.Errorf("order is not in locked status")
 )
 

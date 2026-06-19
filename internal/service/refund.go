@@ -11,6 +11,7 @@ import (
 
 	"github.com/reuben/group-buying/internal/errcode"
 	"github.com/reuben/group-buying/internal/model"
+	"github.com/reuben/group-buying/internal/pay"
 	"github.com/reuben/group-buying/internal/repository"
 )
 
@@ -33,6 +34,7 @@ type RefundService struct {
 	paymentRepo repository.PaymentRepository
 	cacheRepo   repository.CacheRepository
 	notifyRepo  repository.NotifyTaskRepository
+	payGateway  pay.Gateway
 }
 
 // NewRefundService 构造函数。
@@ -41,12 +43,14 @@ func NewRefundService(
 	paymentRepo repository.PaymentRepository,
 	cacheRepo repository.CacheRepository,
 	notifyRepo repository.NotifyTaskRepository,
+	payGateway pay.Gateway,
 ) *RefundService {
 	return &RefundService{
 		orderRepo:   orderRepo,
 		paymentRepo: paymentRepo,
 		cacheRepo:   cacheRepo,
 		notifyRepo:  notifyRepo,
+		payGateway:  payGateway,
 	}
 }
 
@@ -177,6 +181,14 @@ func (s *RefundService) unpaidRefund(ctx context.Context, order *model.Order) (*
 func (s *RefundService) paidRefund(ctx context.Context, order *model.Order) (*RefundResult, error) {
 	slog.DebugContext(ctx, "refund: paid", "order_id", order.OrderID, "team_id", order.TeamID)
 
+	// 0. 调用支付网关退款（已支付的订单必须真实退款）
+	if s.payGateway != nil {
+		if _, err := s.payGateway.Refund(ctx, order.OrderID, order.PayPrice); err != nil {
+			slog.ErrorContext(ctx, "refund paid: gateway refund failed", "order_id", order.OrderID, "error", err)
+			return nil, fmt.Errorf("refund paid: gateway refund: %w", err)
+		}
+	}
+
 	// 1. 更新订单状态
 	if err := s.orderRepo.UpdateOrderStatusWithCheck(ctx, order.OrderID, model.OrderStatusPaid, model.OrderStatusRefunded); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -220,6 +232,14 @@ func (s *RefundService) paidRefund(ctx context.Context, order *model.Order) (*Re
 //   - 不释放名额（已成团，名额已消耗）
 func (s *RefundService) paidTeamRefund(ctx context.Context, order *model.Order) (*RefundResult, error) {
 	slog.DebugContext(ctx, "refund: paid team", "order_id", order.OrderID, "team_id", order.TeamID)
+
+	// 0. 调用支付网关退款（已成团退单同样需要真实退款）
+	if s.payGateway != nil {
+		if _, err := s.payGateway.Refund(ctx, order.OrderID, order.PayPrice); err != nil {
+			slog.ErrorContext(ctx, "refund paid team: gateway refund failed", "order_id", order.OrderID, "error", err)
+			return nil, fmt.Errorf("refund paid team: gateway refund: %w", err)
+		}
+	}
 
 	// 1. 更新订单状态
 	if err := s.orderRepo.UpdateOrderStatusWithCheck(ctx, order.OrderID, model.OrderStatusPaid, model.OrderStatusRefunded); err != nil {
@@ -318,11 +338,11 @@ func (s *RefundService) releaseStock(ctx context.Context, activityID int64, team
 // 失败仅打日志，不阻塞退单主流程。
 func (s *RefundService) createRefundNotifyTask(ctx context.Context, order *model.Order, category string) {
 	payload, _ := json.Marshal(map[string]any{
-		"teamId":      order.TeamID,
-		"outTradeNo":  order.OutTradeNo,
-		"orderId":     order.OrderID,
-		"userId":      order.UserID,
-		"activityId":  order.ActivityID,
+		"teamId":     order.TeamID,
+		"outTradeNo": order.OutTradeNo,
+		"orderId":    order.OrderID,
+		"userId":     order.UserID,
+		"activityId": order.ActivityID,
 	})
 
 	// 查团获取 notify 配置

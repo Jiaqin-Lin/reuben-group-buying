@@ -13,13 +13,13 @@ const (
 	CodeHTTPError      = "0005" // HTTP接口调用异常
 
 	// 拼团业务错误码
-	CodeNoDiscountService   = "E0001" // 不存在对应的折扣计算服务
-	CodeTrialFailed         = "E0002" // 无拼团营销配置或试算结果异常
-	CodeActivityDegrade     = "E0003" // 拼团活动降级拦截
-	CodeActivityCutOver     = "E0004" // 拼团活动切量拦截
-	CodeTeamFull            = "E0006" // 拼团组队完结，锁单量已达成
-	CodeCrowdBlocked        = "E0007" // 拼团人群限定，不可参与
-	CodeStockInsufficient   = "E0008" // 拼团组队失败，缓存库存不足
+	CodeNoDiscountService = "E0001" // 不存在对应的折扣计算服务
+	CodeTrialFailed       = "E0002" // 无拼团营销配置或试算结果异常
+	CodeActivityDegrade   = "E0003" // 拼团活动降级拦截
+	CodeActivityCutOver   = "E0004" // 拼团活动切量拦截
+	CodeTeamFull          = "E0006" // 拼团组队完结，锁单量已达成
+	CodeCrowdBlocked      = "E0007" // 拼团人群限定，不可参与
+	CodeStockInsufficient = "E0008" // 拼团组队失败，缓存库存不足
 
 	CodeActivityInactive    = "E0101" // 拼团活动未生效
 	CodeActivityTimeInvalid = "E0102" // 不在拼团活动有效时间内
@@ -30,6 +30,12 @@ const (
 	CodeRefundStateInvalid  = "E0107" // 订单状态不允许退单
 
 	CodeRateLimit = "E0200" // 请求过于频繁
+
+	// 支付错误码
+	CodePayCreateFailed   = "P0001" // 创建支付单失败
+	CodePayNotifyVerify   = "P0002" // 支付回调验签失败
+	CodePayNotifyNotFound = "P0003" // 支付回调对应订单不存在
+	CodeRefundFailed      = "P0004" // 退款失败
 )
 
 // 错误码对应的默认消息
@@ -55,6 +61,10 @@ var codeMessages = map[string]string{
 	CodeOrderTimeInvalid:    "订单交易时间不在拼团有效时间范围内",
 	CodeRefundStateInvalid:  "订单状态不允许退单",
 	CodeRateLimit:           "请求过于频繁",
+	CodePayCreateFailed:     "创建支付单失败",
+	CodePayNotifyVerify:     "支付回调验签失败",
+	CodePayNotifyNotFound:   "支付回调对应订单不存在",
+	CodeRefundFailed:        "退款失败",
 }
 
 // Message 返回错误码对应的默认消息。

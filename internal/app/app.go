@@ -49,16 +49,16 @@ type App struct {
 
 // metrics 全局计数器（atomic，无锁）。
 var (
-	metricReqTotal   atomic.Int64
-	metricReqTrial   atomic.Int64
-	metricReqLock    atomic.Int64
-	metricReqSettle  atomic.Int64
-	metricReqRefund  atomic.Int64
-	metricErr5xx     atomic.Int64
-	metricErr4xx     atomic.Int64
-	metricCacheHit   atomic.Int64
-	metricCacheMiss  atomic.Int64
-	startTime        = time.Now()
+	metricReqTotal  atomic.Int64
+	metricReqTrial  atomic.Int64
+	metricReqLock   atomic.Int64
+	metricReqSettle atomic.Int64
+	metricReqRefund atomic.Int64
+	metricErr5xx    atomic.Int64
+	metricErr4xx    atomic.Int64
+	metricCacheHit  atomic.Int64
+	metricCacheMiss atomic.Int64
+	startTime       = time.Now()
 )
 
 // New 从配置构建完整的 App。
@@ -103,8 +103,29 @@ func New(cfg *config.Config) (*App, error) {
 	notifyRepo := repository.NewNotifyTaskRepo(db)
 	cacheRepo := repository.NewRedisCacheRepo(rdb)
 
-	// 6. 组装 Service 层（注入 localCache + payment）
-	payGateway := pay.NewMock()
+	// 6. 选择支付网关：支付宝配置了 app_id 则用真实网关，否则降级 Mock
+	var payGateway pay.Gateway
+	if cfg.Alipay.AppID != "" {
+		alipayGW, err := pay.NewAlipay(pay.AlipayConfig{
+			AppID:           cfg.Alipay.AppID,
+			PrivateKey:      cfg.Alipay.PrivateKey,
+			AlipayPublicKey: cfg.Alipay.AlipayPublicKey,
+			NotifyURL:       cfg.Alipay.NotifyURL,
+			ReturnURL:       cfg.Alipay.ReturnURL,
+			Sandbox:         cfg.Alipay.Sandbox,
+			SignType:        cfg.Alipay.SignType,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("init alipay gateway: %w", err)
+		}
+		payGateway = alipayGW
+		logger.Info("alipay gateway enabled", "app_id", cfg.Alipay.AppID, "sandbox", cfg.Alipay.Sandbox)
+	} else {
+		payGateway = pay.NewMock()
+		logger.Info("using mock payment gateway (alipay.app_id not configured)")
+	}
+
+	// 7. 组装 Service 层（注入 localCache + payment）
 	trialSvc := service.NewTrialService(activityRepo, productRepo, cacheRepo, crowdRepo, localCache)
 	lockSvc := service.NewLockService(
 		trialSvc, orderRepo, activityRepo, cacheRepo, localCache,
@@ -113,9 +134,9 @@ func New(cfg *config.Config) (*App, error) {
 		time.Duration(cfg.App.LockResultTTL)*time.Second,
 	)
 	settlementSvc := service.NewSettlementService(orderRepo, activityRepo, cacheRepo, notifyRepo, localCache)
-	refundSvc := service.NewRefundService(orderRepo, paymentRepo, cacheRepo, notifyRepo)
+	refundSvc := service.NewRefundService(orderRepo, paymentRepo, cacheRepo, notifyRepo, payGateway)
 
-	// 7. 组装 MQ 和 Notify 服务（Phase 8）
+	// 8. 组装 MQ 和 Notify 服务（Phase 8）
 	mqClient := mq.New(rdb, logger)
 	notifySvc := service.NewNotifyService(
 		notifyRepo, cacheRepo, mqClient,
@@ -124,7 +145,7 @@ func New(cfg *config.Config) (*App, error) {
 		},
 	)
 
-	// 8. 动态配置（Phase 9a）
+	// 9. 动态配置（Phase 9a）
 	dynMgr := dynamic.New(db, rdb, redisx.ConfigChannel(), logger)
 
 	if err := dynMgr.Register(
@@ -145,7 +166,7 @@ func New(cfg *config.Config) (*App, error) {
 	}
 	logger.Info("dynamic config loaded", "keys", 8)
 
-	// 9. 超时退单扫描（Phase 9b）
+	// 10. 超时退单扫描（Phase 9b）
 	timeoutSvc := service.NewTimeoutService(
 		orderRepo, refundSvc, rdb,
 		service.TimeoutServiceConfig{
@@ -154,12 +175,15 @@ func New(cfg *config.Config) (*App, error) {
 		logger,
 	)
 
-	// 10. 组装 Handler 层
+	// 10. 支付回调 Handler
+	payHandler := handler.NewPayHandler(payGateway, paymentRepo, orderRepo, settlementSvc)
+
+	// 11. 组装 Handler 层
 	indexHandler := handler.NewIndexHandler(trialSvc)
 	tradeHandler := handler.NewTradeHandler(lockSvc, settlementSvc, refundSvc)
 	adminHandler := handler.NewAdminHandler(dynMgr)
 
-	// 11. 构建路由
+	// 12. 构建路由
 	gin.SetMode(cfg.Server.Mode)
 	router := gin.New()
 	router.Use(tracing.Middleware())
@@ -174,6 +198,8 @@ func New(cfg *config.Config) (*App, error) {
 	router.POST("/api/v1/trade/lock", tradeHandler.LockOrder)
 	router.POST("/api/v1/trade/settlement", tradeHandler.Settlement)
 	router.POST("/api/v1/trade/refund", tradeHandler.Refund)
+	router.POST("/api/v1/pay/notify", payHandler.Notify)
+	router.GET("/api/v1/pay/qr", payHandler.ShowQR)
 	router.GET("/api/v1/admin/configs", adminHandler.ListConfigs)
 	router.PUT("/api/v1/admin/configs/:key", adminHandler.UpdateConfig)
 

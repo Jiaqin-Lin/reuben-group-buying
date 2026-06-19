@@ -30,8 +30,8 @@ const (
 
 // 通知分类常量
 const (
-	NotifyCategorySettlement        = "trade_settlement"          // 成团结算
-	NotifyCategoryUnpaidRefund      = "trade_unpaid_refund"       // 未支付退单
-	NotifyCategoryPaidRefund        = "trade_paid_refund"         // 已支付未成团退单
-	NotifyCategoryPaidTeamRefund    = "trade_paid_team_refund"    // 已成团退单
+	NotifyCategorySettlement     = "trade_settlement"       // 成团结算
+	NotifyCategoryUnpaidRefund   = "trade_unpaid_refund"    // 未支付退单
+	NotifyCategoryPaidRefund     = "trade_paid_refund"      // 已支付未成团退单
+	NotifyCategoryPaidTeamRefund = "trade_paid_team_refund" // 已成团退单
 )

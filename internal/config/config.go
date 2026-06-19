@@ -17,6 +17,7 @@ type Config struct {
 	Redis  RedisConfig  `mapstructure:"redis"`
 	Log    LogConfig    `mapstructure:"log"`
 	App    AppConfig    `mapstructure:"app"`
+	Alipay AlipayConfig `mapstructure:"alipay"`
 }
 
 // ServerConfig HTTP 服务配置
@@ -60,11 +61,23 @@ type LogConfig struct {
 
 // AppConfig 业务配置
 type AppConfig struct {
-	Name               string `mapstructure:"name"`
-	LockResultTTL      int    `mapstructure:"lock_result_ttl"`
-	OrderLockTTL       int    `mapstructure:"order_lock_ttl"`
-	NotifyMaxRetry     int    `mapstructure:"notify_max_retry"`
-	TimeoutScanInterval int   `mapstructure:"timeout_scan_interval"`
+	Name                string `mapstructure:"name"`
+	LockResultTTL       int    `mapstructure:"lock_result_ttl"`
+	OrderLockTTL        int    `mapstructure:"order_lock_ttl"`
+	NotifyMaxRetry      int    `mapstructure:"notify_max_retry"`
+	TimeoutScanInterval int    `mapstructure:"timeout_scan_interval"`
+}
+
+// AlipayConfig 支付宝支付配置。
+// 不配置时（app_id 为空）自动降级使用 Mock 支付网关。
+type AlipayConfig struct {
+	AppID           string `mapstructure:"app_id"`            // 沙箱/正式应用 APPID
+	PrivateKey      string `mapstructure:"private_key"`       // 应用私钥（PEM 内容或文件路径）
+	AlipayPublicKey string `mapstructure:"alipay_public_key"` // 支付宝公钥（用于验签回调）
+	NotifyURL       string `mapstructure:"notify_url"`        // 异步回调地址（支付宝 POST 通知到此）
+	ReturnURL       string `mapstructure:"return_url"`        // 同步跳转地址（可选）
+	Sandbox         bool   `mapstructure:"sandbox"`           // true=沙箱, false=正式
+	SignType        string `mapstructure:"sign_type"`         // RSA2（默认）
 }
 
 // Load 从指定路径加载配置。path 为空时默认搜索当前目录和 ./config/。
@@ -128,4 +141,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("app.order_lock_ttl", 3)
 	v.SetDefault("app.notify_max_retry", 5)
 	v.SetDefault("app.timeout_scan_interval", 30)
+
+	v.SetDefault("alipay.sandbox", true)
+	v.SetDefault("alipay.sign_type", "RSA2")
 }

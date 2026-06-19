@@ -22,6 +22,9 @@ type Gateway interface {
 
 	// VerifyNotify 验签支付回调。
 	VerifyNotify(ctx context.Context, raw []byte) (*Notify, error)
+
+	// Refund 退款。
+	Refund(ctx context.Context, orderID string, refundAmount string) (*RefundResult, error)
 }
 
 // CreateResult 创建支付单结果。
@@ -37,12 +40,20 @@ type QueryResult struct {
 	Amount  string `json:"amount"`
 }
 
+// RefundResult 退款结果。
+type RefundResult struct {
+	RefundTradeNo string `json:"refund_trade_no"` // 支付宝退款单号
+	Amount        string `json:"amount"`          // 退款金额
+}
+
 // Notify 支付回调通知（验签后）。
 type Notify struct {
 	TradeNo     string `json:"trade_no"`
-	OutTradeNo  string `json:"out_trade_no"` // 对应 orders.order_id
+	OutTradeNo  string `json:"out_trade_no"` // 对应 orders.order_id（= 支付宝的 out_trade_no 参数）
 	TotalAmount string `json:"total_amount"`
-	Status      string `json:"status"` // TRADE_SUCCESS | TRADE_CLOSED
+	Status      string `json:"status"`      // TRADE_SUCCESS | TRADE_CLOSED
+	NotifyID    string `json:"notify_id"`   // 支付宝通知 ID，用于去重
+	GmtPayment  string `json:"gmt_payment"` // 支付完成时间（支付宝格式）
 }
 
 // Mock 支付网关 Mock 实现。
@@ -80,5 +91,16 @@ func (m *Mock) VerifyNotify(_ context.Context, raw []byte) (*Notify, error) {
 		OutTradeNo:  "",
 		TotalAmount: "0.00",
 		Status:      "TRADE_SUCCESS",
+		NotifyID:    "MOCK_NOTIFY_ID",
+		GmtPayment:  "",
+	}, nil
+}
+
+// Refund Mock 退款。
+// 总是成功。
+func (m *Mock) Refund(_ context.Context, orderID string, refundAmount string) (*RefundResult, error) {
+	return &RefundResult{
+		RefundTradeNo: fmt.Sprintf("MOCK_REFUND_%s", orderID),
+		Amount:        refundAmount,
 	}, nil
 }

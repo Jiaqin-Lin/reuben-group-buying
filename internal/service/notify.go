@@ -66,9 +66,9 @@ func NewNotifyService(
 	}
 
 	return &NotifyService{
-		notifyRepo:  notifyRepo,
-		cacheRepo:   cacheRepo,
-		mqClient:    mqClient,
+		notifyRepo: notifyRepo,
+		cacheRepo:  cacheRepo,
+		mqClient:   mqClient,
 		httpClient: &http.Client{
 			Timeout: 5 * time.Second,
 		},

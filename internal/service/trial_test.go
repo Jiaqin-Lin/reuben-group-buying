@@ -6,8 +6,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/shopspring/decimal"
 	goredis "github.com/redis/go-redis/v9"
+	"github.com/shopspring/decimal"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"

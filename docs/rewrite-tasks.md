@@ -278,17 +278,52 @@
 
 ---
 
-## Phase 11：支付对接（新增）
+## Phase 11：支付对接（新增）✅
 
-- [ ] **11.1** 定义支付网关接口（`internal/pay/gateway.go`）
+- [x] **11.1** 定义支付网关接口（`internal/pay/gateway.go`）
   - `CreateOrder(ctx, req) → payUrl` — 创建支付单
   - `QueryOrder(ctx, outTradeNo) → status` — 查询支付状态
   - `Refund(ctx, outTradeNo) → refundId` — 退款
   - `VerifyNotify(ctx, raw) → notify` — 验签支付回调
-- [ ] **11.2** 实现 Mock 支付网关（开发/测试用）
-- [ ] **11.3** 支付回调接口 `POST /api/v1/pay/notify`
-- [ ] **11.4** 在锁单响应中返回支付链接（payUrl）
-- [ ] **11.5** 预留真实支付网关实现（微信/支付宝）
+- [x] **11.2** 实现 Mock 支付网关（开发/测试用）
+- [x] **11.3** 支付回调接口 `POST /api/v1/pay/notify` — PayHandler 处理异步通知，验签→去重→更新payment→触发结算
+- [x] **11.4** 在锁单响应中返回支付链接（payUrl）
+- [x] **11.5** 实现支付宝沙箱支付网关（`internal/pay/alipay.go`）
+  - 使用 `smartwalle/alipay/v3` SDK
+  - 支持沙箱/正式网关切换
+  - 当面付预创建（TradePreCreate）→ 返回二维码
+  - 支付查询（TradeQuery）
+  - 退款（TradeRefund）
+  - 异步通知验签（DecodeNotification + RSA2）
+  - 密钥支持 PEM 内容或文件路径
+  - 未配置 app_id 时自动降级 Mock
+
+**新增/修改文件**：
+- `internal/pay/gateway.go` — 新增 Refund 方法、RefundResult、NotifyID/GmtPayment 字段
+- `internal/pay/alipay.go`（~200 行）— AlipayGateway 实现
+- `internal/handler/pay.go`（~160 行）— PayHandler：接收支付宝异步通知 → 结算
+- `internal/config/config.go` — 新增 AlipayConfig
+- `config.yaml` — 注释掉的 alipay 配置段
+- `internal/app/app.go` — 条件选择网关、PayHandler 路由、RefundService 注入 payGateway
+- `internal/service/refund.go` — 注入 payGateway，paidRefund/paidTeamRefund 调用真实退款
+- `internal/errcode/errcode.go` — 新增 P0001-P0004 支付错误码
+- `go.mod` — 新增 `github.com/smartwalle/alipay/v3`
+
+**支付回调 → 结算流程**：
+```
+Alipay POST notify → PayHandler.Notify
+  → VerifyNotify (RSA2验签) → notify_id去重 → 记录payment_log
+  → 查payment (by order_id) → UpdatePaymentPaid
+  → 查order → settlementSvc.Settle(SettlementRequest{OutTradeNo: payment.OutTradeNo})
+  → 返回 "success"
+```
+
+**支付宝沙箱配置（需手动操作）**：
+1. 在 [支付宝开放平台](https://open.alipay.com/) 获取沙箱 APPID
+2. 生成 RSA2 密钥对并上传应用公钥
+3. 获取支付宝公钥
+4. 配置 config.yaml 中的 alipay 段
+5. 回调地址需公网可达（部署到服务器即可，无需内网穿透）
 
 ---
 
@@ -310,7 +345,7 @@
 - [ ] **Q1** 是否保留人群标签（crowd_tags）功能？目前业务场景似乎未大量使用
 - [ ] **Q2** 消息队列选型：RabbitMQ / Kafka / Redis Stream / 先不做？
 - [ ] **Q3** 是否需要管理后台 CRUD 接口（活动/折扣/商品）？~~已有 admin config API~~
-- [ ] **Q4** 支付网关先对接微信还是支付宝？还是先做 Mock 够用？
+- [x] **Q4** 支付网关先对接微信还是支付宝？~~还是先做 Mock 够用？~~ → 已对接支付宝沙箱
 
 ---
 

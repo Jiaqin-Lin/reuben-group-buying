@@ -39,8 +39,8 @@ type Def[T any] struct {
 	Default T      // 硬编码默认值，启动时若 MySQL 无此 key 则使用
 	Desc    string // 人类可读的描述
 
-	mgr *Manager       // 注册后回填
-	val *atomic.Value  // 当前值，Register 时初始化
+	mgr *Manager      // 注册后回填
+	val *atomic.Value // 当前值，Register 时初始化
 }
 
 // NewDef 创建一个配置定义。
@@ -66,10 +66,10 @@ func (d *Def[T]) Get() T {
 // --- configDef 接口实现 ---
 // 这些方法仅供 Manager 内部使用，不要直接调用。
 
-func (d *Def[T]) getKey() string     { return d.Key }
-func (d *Def[T]) getDefault() any    { return d.Default }
-func (d *Def[T]) getValue() any      { return d.val.Load() }
-func (d *Def[T]) bind(m *Manager)    { d.mgr = m }
+func (d *Def[T]) getKey() string  { return d.Key }
+func (d *Def[T]) getDefault() any { return d.Default }
+func (d *Def[T]) getValue() any   { return d.val.Load() }
+func (d *Def[T]) bind(m *Manager) { d.mgr = m }
 
 func (d *Def[T]) loadFromJSON(jsonStr string) error {
 	var v T
