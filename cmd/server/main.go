@@ -65,7 +65,8 @@ func main() {
 	productRepo := repository.NewProductRepo(db)
 	crowdRepo := repository.NewCrowdRepo(db)
 	orderRepo := repository.NewOrderRepo(db)
-	_ = repository.NewPaymentRepo(db) // Phase 6 结算用
+	_ = repository.NewPaymentRepo(db) // Phase 11 支付对接用
+	notifyRepo := repository.NewNotifyTaskRepo(db)
 	cacheRepo := repository.NewRedisCacheRepo(rdb)
 
 	// 6. 初始化 Service 层
@@ -75,10 +76,11 @@ func main() {
 		time.Duration(cfg.App.OrderLockTTL)*time.Second,
 		time.Duration(cfg.App.LockResultTTL)*time.Second,
 	)
+	settlementSvc := service.NewSettlementService(orderRepo, activityRepo, cacheRepo, notifyRepo)
 
 	// 7. 初始化 Handler 层
 	indexHandler := handler.NewIndexHandler(trialSvc)
-	tradeHandler := handler.NewTradeHandler(lockSvc)
+	tradeHandler := handler.NewTradeHandler(lockSvc, settlementSvc)
 
 	// 8. 初始化 Gin 路由
 	gin.SetMode(cfg.Server.Mode)
@@ -93,6 +95,7 @@ func main() {
 	router.GET("/health", healthHandler(db, rdb))
 	router.POST("/api/v1/trial", indexHandler.Trial)
 	router.POST("/api/v1/trade/lock", tradeHandler.LockOrder)
+	router.POST("/api/v1/trade/settlement", tradeHandler.Settlement)
 
 	// 8. 启动 HTTP 服务（优雅退出）
 	srv := &http.Server{

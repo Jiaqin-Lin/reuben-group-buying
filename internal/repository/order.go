@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/reuben/group-buying/internal/model"
 	"gorm.io/gorm"
@@ -69,6 +70,11 @@ type OrderRepository interface {
 	// 成团（0→1）、失败（0→2）、成团含退款（1→3）。
 	UpdateTeamStatus(ctx context.Context, teamID string, status int8) error
 
+	// SettleOrder 结算订单（事务内完成订单状态更新+团进度更新+成团判断）。
+	// 流程：SELECT FOR UPDATE team → 校验 → UPDATE order status=1 → UPDATE team.complete_count+1 → 判断成团。
+	// 返回结算结果，包含是否成团及成团相关信息（用于创建 notify_task）。
+	SettleOrder(ctx context.Context, params SettleOrderParams) (*SettleOrderResult, error)
+
 	// --- 超时扫描 ---
 
 	// FindTimeoutOrders 查询超时未支付的订单列表。
@@ -90,10 +96,32 @@ type TimeoutOrder struct {
 
 // 业务错误（哨兵错误，service 层判断用）
 var (
-	ErrTeamFull  = fmt.Errorf("team is full")
-	ErrOrderDup  = fmt.Errorf("order duplicate")
-	ErrTeamDup   = fmt.Errorf("team duplicate")
+	ErrTeamFull     = fmt.Errorf("team is full")
+	ErrOrderDup     = fmt.Errorf("order duplicate")
+	ErrTeamDup      = fmt.Errorf("team duplicate")
+	ErrTeamNotForming = fmt.Errorf("team is not forming")
+	ErrTeamExpired  = fmt.Errorf("team has expired")
+	ErrOrderNotLocked = fmt.Errorf("order is not in locked status")
 )
+
+// SettleOrderParams 结算订单参数。
+type SettleOrderParams struct {
+	OutTradeNo   string
+	UserID       string
+	OutTradeTime time.Time
+}
+
+// SettleOrderResult 结算订单结果。
+type SettleOrderResult struct {
+	OrderID       string  // 内部订单号
+	TeamID        string  // 团 ID
+	ActivityID    int64   // 活动 ID
+	IsComplete    bool    // 本次结算后成团
+	TargetCount   int     // 目标人数
+	CompleteCount int     // 结算后的 complete_count
+	NotifyType    string  // 通知类型（来自 team）
+	NotifyURL     *string // 通知地址（来自 team）
+}
 
 // orderRepo GORM 实现。
 type orderRepo struct {
@@ -263,6 +291,105 @@ func (r *orderRepo) UpdateTeamStatus(ctx context.Context, teamID string, status 
 		return fmt.Errorf("update team status %s: %w", teamID, gorm.ErrRecordNotFound)
 	}
 	return nil
+}
+
+// SettleOrder 结算订单（事务内完成）。
+//
+// 流程：
+//  1. 查订单，校验 userId 和 status=Locked
+//  2. SELECT FOR UPDATE 锁团行
+//  3. 校验团状态（forming + 未过期）
+//  4. UPDATE order SET status=1, out_trade_time=? WHERE order_id=? AND status=0
+//  5. UPDATE team SET complete_count = complete_count + 1
+//  6. 判断成团（old.complete_count + 1 >= target_count）→ 更新 team status=1
+//
+// 并发安全：
+//   - SELECT FOR UPDATE 串行化同团的并发结算，保证只有一个请求判定"成团"
+//   - order 状态条件更新（WHERE status=0）防重复结算
+func (r *orderRepo) SettleOrder(ctx context.Context, params SettleOrderParams) (*SettleOrderResult, error) {
+	var result *SettleOrderResult
+
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 1. 查订单
+		var order model.Order
+		if err := tx.Where("out_trade_no = ?", params.OutTradeNo).First(&order).Error; err != nil {
+			return fmt.Errorf("find order by out_trade_no %s: %w", params.OutTradeNo, err)
+		}
+		if order.UserID != params.UserID {
+			return fmt.Errorf("order user mismatch: expected %s, got %s", params.UserID, order.UserID)
+		}
+		if order.Status != model.OrderStatusLocked {
+			return ErrOrderNotLocked
+		}
+
+		// 2. SELECT FOR UPDATE 锁团行
+		var team model.Team
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("team_id = ?", order.TeamID).
+			First(&team).Error; err != nil {
+			return fmt.Errorf("find team for update %s: %w", order.TeamID, err)
+		}
+
+		// 3. 校验团状态
+		if team.Status != model.TeamStatusForming {
+			return ErrTeamNotForming
+		}
+		if time.Now().After(team.ValidEnd) {
+			return ErrTeamExpired
+		}
+
+		// 4. 更新订单状态（条件更新，防重复结算）
+		orderUpdate := tx.Model(&model.Order{}).
+			Where("order_id = ? AND status = ?", order.OrderID, model.OrderStatusLocked).
+			Updates(map[string]any{
+				"status":         model.OrderStatusPaid,
+				"out_trade_time": params.OutTradeTime,
+			})
+		if orderUpdate.Error != nil {
+			return fmt.Errorf("update order status: %w", orderUpdate.Error)
+		}
+		if orderUpdate.RowsAffected == 0 {
+			return ErrOrderNotLocked
+		}
+
+		// 5. 增加团完成人数
+		teamUpdate := tx.Model(&model.Team{}).
+			Where("team_id = ?", order.TeamID).
+			Update("complete_count", gorm.Expr("complete_count + 1"))
+		if teamUpdate.Error != nil {
+			return fmt.Errorf("incr team complete_count: %w", teamUpdate.Error)
+		}
+
+		newCompleteCount := team.CompleteCount + 1
+
+		// 6. 判断成团
+		isComplete := newCompleteCount >= team.TargetCount
+		if isComplete {
+			statusUpdate := tx.Model(&model.Team{}).
+				Where("team_id = ? AND status = ?", order.TeamID, model.TeamStatusForming).
+				Update("status", model.TeamStatusComplete)
+			if statusUpdate.Error != nil {
+				return fmt.Errorf("update team status to complete: %w", statusUpdate.Error)
+			}
+		}
+
+		result = &SettleOrderResult{
+			OrderID:       order.OrderID,
+			TeamID:        order.TeamID,
+			ActivityID:    order.ActivityID,
+			IsComplete:    isComplete,
+			TargetCount:   team.TargetCount,
+			CompleteCount: newCompleteCount,
+			NotifyType:    team.NotifyType,
+			NotifyURL:     team.NotifyURL,
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("settle order: %w", err)
+	}
+	return result, nil
 }
 
 // --- 超时扫描 ---

@@ -155,18 +155,26 @@
 
 ---
 
-## Phase 6：结算（Settlement — 支付回调）
+## Phase 6：结算（Settlement — 支付回调）✅
 
-- [ ] **6.1** 实现结算主流程（`service/settlement.go`）：
-  1. 校验订单（outTradeNo + userId 查询 orders）
-  2. 更新 orders 状态为 PAID
-  3. **Redis 原子 incr take_limit 计数**（`TakeLimitCheckAndIncr`，锁单时没加，这里加）
-  4. 更新 teams.complete_count + 1
-  5. 判断是否成团（complete_count == target_count）
-  6. 成团后创建 notify_task
-  7. 执行回调通知
-- [ ] **6.2** 结算接口 HTTP handler：`POST /api/v1/trade/settlement`
-- [ ] **6.3** 结算单元测试
+- [x] **6.1** 实现结算主流程（`service/settlement.go`，约 260 行）：
+  1. 查订单 → 校验 userId + status=Locked
+  2. 已支付 → 幂等返回（补创建 notify_task）
+  3. 查团 → 校验 forming + 未过期
+  4. 查活动 → 获取 take_limit
+  5. 限购软检查（Redis GET，快速拒绝超限）
+  6. **DB 结算先行**（事务，SELECT FOR UPDATE 锁团行，条件更新防重复）
+  7. **Redis INCR 后置**（DB 成功才递增，防并发失败污染计数）
+  8. 成团 → 创建 notify_task
+- [x] **6.2** 结算接口 HTTP handler：`POST /api/v1/trade/settlement`（`handler/trade.go`）
+- [x] **6.3** 结算单元测试（9 个测试全部通过，-race 通过）：
+  - 基础结算、幂等结算、成团、限购超限、订单不存在、用户不匹配、已退款、团过期、并发结算
+
+> **与 Java 版关键差异**：
+> - 无责任链（OutTradeNoCheckNode → OutTradeTimeCheckNode → SourceChannelCheckNode → SettlementEndNode），改为简单 if-else。
+> - source/channel 黑名单暂跳过（Java 版也是 TODO）。
+> - take_limit 软检查（Redis GET）+ DB 成功后才 INCR，防止并发失败污染计数。
+> - DB 结算用 SELECT FOR UPDATE 序列化同团并发，条件 UPDATE（WHERE status=0）防重复结算。
 
 ---
 

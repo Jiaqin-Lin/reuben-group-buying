@@ -74,6 +74,11 @@ type TrialResult struct {
 func (s *TrialService) Trial(ctx context.Context, req TrialRequest) (*TrialResult, error) {
 	slog.DebugContext(ctx, "trial start", "user_id", req.UserID, "goods_id", req.GoodsID, "source", req.Source, "channel", req.Channel)
 
+	// 0. 参数校验
+	if req.UserID == "" || req.GoodsID == "" || req.Source == "" || req.Channel == "" {
+		return nil, &TrialError{Code: errcode.CodeInvalidParam, Err: fmt.Errorf("user_id, goods_id, source, channel are required")}
+	}
+
 	// 1. 查活动-商品映射
 	ap, err := s.activityRepo.FindActivityProduct(ctx, req.Source, req.Channel, req.GoodsID)
 	if err != nil {
@@ -279,13 +284,15 @@ func resolveTagScope(ctx context.Context, tagID *string, tagScope *string, userI
 
 // checkUserInCrowd 检查用户是否在人群标签中（先查缓存，再查 DB）。
 func checkUserInCrowd(ctx context.Context, crowdRepo repository.CrowdRepository, cacheRepo repository.CacheRepository, tagID, userID string) (bool, error) {
-	// 先查 Redis 缓存
+	// 先查 Redis 缓存（SISMEMBER）
+	// 注意：SISMEMBER 对不存在的 key 也返回 false，无法区分"不在集合中"和"缓存未初始化"。
+	// 因此只有 Redis 明确返回 true 时才信任缓存；false 时 fallback 到 DB。
 	inCrowd, err := cacheRepo.CheckCrowdMember(ctx, tagID, userID)
-	if err == nil {
-		return inCrowd, nil
+	if err == nil && inCrowd {
+		return true, nil
 	}
 
-	// 缓存未命中 → 查 DB
+	// 缓存未命中或返回 false → 查 DB
 	slog.DebugContext(ctx, "trial: crowd cache miss, fallback to db", "tag_id", tagID, "user_id", userID)
 	return crowdRepo.IsUserInCrowd(ctx, tagID, userID)
 }

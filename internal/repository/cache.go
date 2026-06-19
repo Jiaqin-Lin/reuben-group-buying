@@ -54,6 +54,11 @@ type CacheRepository interface {
 	// GetTakeCount 获取用户当前参与次数。
 	GetTakeCount(ctx context.Context, activityID int64, userID string) (int64, error)
 
+	// TakeLimitCheckAndIncr 原子检查用户限购次数 + 递增。
+	// 支付成功时调用，Lua 脚本原子完成：key 不存在→用 dbCount 初始化→检查>=limit→未达上限则 INCR。
+	// 返回 (newCount, true) 表示允许参与，(0, false) 表示已达上限。
+	TakeLimitCheckAndIncr(ctx context.Context, activityID int64, userID string, dbCount int64, limit int, ttl time.Duration) (newCount int64, allowed bool, err error)
+
 	// --- 锁单结果缓存 ---
 
 	// CacheLockResult 缓存锁单结果（10min TTL）。
@@ -154,6 +159,17 @@ func (r *redisCacheRepo) GetTakeCount(ctx context.Context, activityID int64, use
 		return 0, fmt.Errorf("cache get take count: %w", err)
 	}
 	return count, nil
+}
+
+func (r *redisCacheRepo) TakeLimitCheckAndIncr(ctx context.Context, activityID int64, userID string, dbCount int64, limit int, ttl time.Duration) (int64, bool, error) {
+	result, err := redisx.TakeLimitCheckAndIncr(ctx, r.rdb, activityID, userID, dbCount, limit, ttl)
+	if err != nil {
+		return 0, false, fmt.Errorf("cache take limit check and incr: %w", err)
+	}
+	if !result.Allowed {
+		return 0, false, nil
+	}
+	return result.NewCount, true, nil
 }
 
 // --- 锁单结果缓存 ---
