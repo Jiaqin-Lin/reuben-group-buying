@@ -62,3 +62,19 @@ func LockResultKey(userID, outTradeNo string) string {
 func CrowdMembersKey(tagID string) string {
 	return fmt.Sprintf("%s:tag:%s:members", prefix, tagID)
 }
+
+// --- 定时任务锁 ---
+
+// TimeoutScanLockKey 超时扫描定时任务的分布式锁 key。
+// 多实例部署时，同一时刻只有一个实例执行超时扫描。
+func TimeoutScanLockKey() string {
+	return fmt.Sprintf("%s:lock:timeout:scanner", prefix)
+}
+
+// --- 动态配置通知 ---
+
+// ConfigChannel 动态配置变更通知的 Redis Pub/Sub 频道名。
+// Manager.Set() 写 MySQL 后 Publish 到此频道，所有实例收到后重读 MySQL。
+func ConfigChannel() string {
+	return fmt.Sprintf("%s:config:updates", prefix)
+}

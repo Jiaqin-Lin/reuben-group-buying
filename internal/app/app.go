@@ -18,6 +18,7 @@ import (
 	"github.com/robfig/cron/v3"
 
 	"github.com/reuben/group-buying/internal/config"
+	"github.com/reuben/group-buying/internal/config/dynamic"
 	"github.com/reuben/group-buying/internal/handler"
 	"github.com/reuben/group-buying/internal/infra/log"
 	"github.com/reuben/group-buying/internal/infra/mq"
@@ -26,16 +27,19 @@ import (
 	"github.com/reuben/group-buying/internal/middleware/logging"
 	"github.com/reuben/group-buying/internal/middleware/recovery"
 	"github.com/reuben/group-buying/internal/middleware/tracing"
+	"github.com/reuben/group-buying/internal/redisx"
 	"github.com/reuben/group-buying/internal/repository"
 	"github.com/reuben/group-buying/internal/service"
 )
 
 // App 聚合所有运行时组件。
 type App struct {
-	cfg       *config.Config
-	logger    *slog.Logger
-	srv       *http.Server
-	notifySvc *service.NotifyService
+	cfg        *config.Config
+	logger     *slog.Logger
+	srv        *http.Server
+	notifySvc  *service.NotifyService
+	timeoutSvc *service.TimeoutService
+	dynMgr     *dynamic.Manager
 }
 
 // New 从配置构建完整的 App。
@@ -94,9 +98,42 @@ func New(cfg *config.Config) (*App, error) {
 		},
 	)
 
+	// 9. 动态配置（Phase 9a：对标 TCC，MySQL + Redis Pub/Sub + 内存热读）
+	dynMgr := dynamic.New(db, rdb, redisx.ConfigChannel(), logger)
+
+	// 注册所有动态配置项
+	if err := dynMgr.Register(
+		dynamic.TrialCacheTTL,
+		dynamic.LockResultTTL,
+		dynamic.OrderLockTTL,
+		dynamic.NotifyMaxRetry,
+		dynamic.NotifyWorkerCount,
+		dynamic.TimeoutScanBatch,
+		dynamic.FeatureSkipCrowd,
+		dynamic.FeatureSkipPayment,
+	); err != nil {
+		return nil, fmt.Errorf("register dynamic configs: %w", err)
+	}
+
+	// 从 MySQL 加载（miss 则写入默认值）
+	if err := dynMgr.Load(context.Background()); err != nil {
+		return nil, fmt.Errorf("load dynamic configs: %w", err)
+	}
+	logger.Info("dynamic config loaded", "keys", 8)
+
+	// 10. 超时退单扫描（Phase 9b）
+	timeoutSvc := service.NewTimeoutService(
+		orderRepo, refundSvc, rdb,
+		service.TimeoutServiceConfig{
+			BatchSize: dynamic.TimeoutScanBatch.Get(),
+		},
+		logger,
+	)
+
 	// 6. 组装 Handler 层
 	indexHandler := handler.NewIndexHandler(trialSvc)
 	tradeHandler := handler.NewTradeHandler(lockSvc, settlementSvc, refundSvc)
+	adminHandler := handler.NewAdminHandler(dynMgr)
 
 	// 7. 构建路由
 	gin.SetMode(cfg.Server.Mode)
@@ -110,11 +147,15 @@ func New(cfg *config.Config) (*App, error) {
 	router.POST("/api/v1/trade/lock", tradeHandler.LockOrder)
 	router.POST("/api/v1/trade/settlement", tradeHandler.Settlement)
 	router.POST("/api/v1/trade/refund", tradeHandler.Refund)
+	router.GET("/api/v1/admin/configs", adminHandler.ListConfigs)
+	router.PUT("/api/v1/admin/configs/:key", adminHandler.UpdateConfig)
 
 	return &App{
-		cfg:       cfg,
-		logger:    logger,
-		notifySvc: notifySvc,
+		cfg:        cfg,
+		logger:     logger,
+		notifySvc:  notifySvc,
+		timeoutSvc: timeoutSvc,
+		dynMgr:     dynMgr,
 		srv: &http.Server{
 			Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
 			Handler:      router,
@@ -126,6 +167,10 @@ func New(cfg *config.Config) (*App, error) {
 
 // Run 启动 HTTP 服务、定时任务，并等待退出信号，收到 SIGINT/SIGTERM 后优雅关闭。
 func (a *App) Run() error {
+	// 启动动态配置 Watch（Redis Pub/Sub 订阅，goroutine 运行）
+	a.dynMgr.Watch(context.Background())
+	defer a.dynMgr.Stop()
+
 	// 启动 HTTP 服务
 	go func() {
 		a.logger.Info("server starting", "port", a.cfg.Server.Port, "mode", a.cfg.Server.Mode)
@@ -135,8 +180,10 @@ func (a *App) Run() error {
 		}
 	}()
 
-	// 启动定时任务：每 15s 扫描待发送的回调通知
+	// 启动定时任务
 	c := cron.New()
+
+	// 每 15s 扫描待发送的回调通知
 	_, err := c.AddFunc("@every 15s", func() {
 		ctx := context.Background()
 		if err := a.notifySvc.ExecPendingTasks(ctx); err != nil {
@@ -144,10 +191,26 @@ func (a *App) Run() error {
 		}
 	})
 	if err != nil {
-		return fmt.Errorf("add cron job: %w", err)
+		return fmt.Errorf("add notify cron job: %w", err)
 	}
+
+	// 超时退单扫描（interval 从 YAML 读）
+	timeoutSpec := fmt.Sprintf("@every %ds", a.cfg.App.TimeoutScanInterval)
+	_, err = c.AddFunc(timeoutSpec, func() {
+		ctx := context.Background()
+		scanned, refunded, failed, scanErr := a.timeoutSvc.ScanAndRefund(ctx)
+		if scanErr != nil {
+			a.logger.Error("timeout scan cron failed", "error", scanErr)
+		} else if scanned > 0 {
+			a.logger.Info("timeout scan done", "scanned", scanned, "refunded", refunded, "failed", failed)
+		}
+	})
+	if err != nil {
+		return fmt.Errorf("add timeout cron job: %w", err)
+	}
+
 	c.Start()
-	a.logger.Info("cron jobs started", "jobs", "notify-scanner@15s")
+	a.logger.Info("cron jobs started", "jobs", fmt.Sprintf("notify-scanner@15s, timeout-scanner@%s", timeoutSpec))
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)

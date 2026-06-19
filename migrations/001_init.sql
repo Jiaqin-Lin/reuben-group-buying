@@ -1,6 +1,6 @@
 -- 拼团营销系统 - 初始化建表
 -- MySQL 8.0+
--- 12 张表：7 核心 + 2 支付 + 3 人群标签
+-- 13 张表：7 核心 + 2 支付 + 3 人群标签 + 1 动态配置
 
 CREATE DATABASE IF NOT EXISTS `group_buy_market`
   DEFAULT CHARACTER SET utf8mb4
@@ -244,6 +244,21 @@ CREATE TABLE `crowd_tag_jobs` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_batch_id` (`batch_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='人群标签任务';
+
+-- ============================================================
+-- 13. dynamic_configs — 动态配置（Go 版新增，对标 TCC）
+-- ============================================================
+CREATE TABLE `dynamic_configs` (
+  `id`           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `config_key`   VARCHAR(128)    NOT NULL COMMENT '配置键',
+  `config_value` TEXT            NOT NULL COMMENT 'JSON 值',
+  `version`      INT UNSIGNED    NOT NULL DEFAULT 1 COMMENT '版本号',
+  `updated_by`   VARCHAR(64)     NOT NULL DEFAULT '' COMMENT '更新人',
+  `updated_at`   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `created_at`   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_key` (`config_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='动态配置';
 
 -- ============================================================
 -- 测试数据

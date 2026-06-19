@@ -229,24 +229,48 @@
 
 ---
 
-## Phase 9：超时退单定时任务
+## Phase 9：超时退单 + 动态配置 ✅
 
-- [ ] **9.1** 实现超时扫描（查询 orders.status=0 且 teams.valid_end < NOW()）
-- [ ] **9.2** 批量触发退单（每个超时订单调用退单服务）
-- [ ] **9.3** 定时任务调度（Go cron 库或 time.Ticker）
-- [ ] **9.4** 多实例防重复（分布式锁或 DB 抢占）
+### 9a. 动态配置系统（对标字节 TCC）
+
+> **为什么不复刻 Java DCC**：Java 用 `BeanPostProcessor` + 反射 + `@DCCValue` 注解 + Fastjson 做配置热更新，极度复杂。
+> Go 版方案：**MySQL 做 source of truth + 本地 atomic.Value 热读 + Redis Pub/Sub 跨实例通知**。
+> Redis 重启丢失、无审计、无版本，不适合做配置数据源。
+
+- [x] **9a.1** `internal/model/dynamic_config.go` — DynamicConfig 数据模型
+- [x] **9a.2** `internal/config/dynamic/def.go` — `Def[T any]` 泛型配置定义（支持 int/bool/string）
+- [x] **9a.3** `internal/config/dynamic/manager.go` — Manager：Register / Load（MySQL）/ Watch（Redis Pub/Sub）/ Set（MySQL + 通知）
+- [x] **9a.4** `internal/config/dynamic/defs.go` — 中央配置注册表（8 个配置项：TTL、阈值、降级开关）
+- [x] **9a.5** `internal/handler/admin.go` — Admin API：`GET /api/v1/admin/configs`、`PUT /api/v1/admin/configs/:key`
+- [x] **9a.6** `migrations/001_init.sql` — 新增 `dynamic_configs` 表（config_key, config_value, version, updated_by）
+- [x] **9a.7** 集成到 `app.go`：Register → Load → Watch（goroutine）+ admin routes
+
+> **使用方式**:
+> ```go
+> // 定义
+> var TrialCacheTTL = NewDef[int]("trial.cache_ttl", 10, "试算缓存TTL（秒）")
+> // 使用（热路径，无锁 atomic 读）
+> ttl := TrialCacheTTL.Get()
+> // 更新（admin API 或代码，所有实例 ~10ms 同步）
+> PUT /api/v1/admin/configs/trial.cache_ttl  {"value": 30}
+> ```
+
+### 9b. 超时退单定时任务
+
+- [x] **9b.1** `internal/redisx/keys.go` — 新增 `TimeoutScanLockKey()`（`bgm:lock:timeout:scanner`）
+- [x] **9b.2** `internal/service/timeout.go` — TimeoutService：游标分页扫描 → 逐条调 RefundService → 分布式锁防多实例
+- [x] **9b.3** 集成到 `app.go`：第二个 cron job（interval 从 YAML `timeout_scan_interval` 读）
+
+> **设计决策**: 串行退单（超时订单已是延迟，不求吞吐）；每批 100 条光标分页；分布式锁 60s TTL。
 
 ---
 
 ## Phase 10：缓存预热 & 性能优化
 
-> Java 版 DCC 的坑：用 `BeanPostProcessor` + 反射 + `@DCCValue` 注解 + Fastjson 反序列化来做配置热更新，极度复杂。Go 版直接读 Redis/DB 更新本地变量即可。
-
 - [ ] **10.1** 启动时预加载活动/折扣/商品到本地缓存（sync.Map 或 go-cache）
-- [ ] **10.2** 配置热更新接口：`POST /api/v1/admin/config/reload`，从 DB/Redis 重新加载本地缓存（对标 Java DCC，但实现只需几十行）
-- [ ] **10.3** 试算结果短 TTL 缓存（3~10 秒，key=`trial:{userId}:{outTradeNo}`，防重试穿透）
-- [ ] **10.4** 报价上下文缓存（活动+折扣+商品+渠道映射，key=`bgm:quote:{source}:{channel}:{goodsId}`，分钟级 TTL）
-- [ ] **10.5** 压测验证（wrk / vegeta），目标 QPS > 5000（锁单）、> 20000（试算）
+- [ ] **10.2** 试算结果短 TTL 缓存（3~10 秒，key=`trial:{userId}:{outTradeNo}`，防重试穿透）
+- [ ] **10.3** 报价上下文缓存（活动+折扣+商品+渠道映射，key=`bgm:quote:{source}:{channel}:{goodsId}`，分钟级 TTL）
+- [ ] **10.4** 压测验证（wrk / vegeta），目标 QPS > 5000（锁单）、> 20000（试算）
 
 ---
 
@@ -281,7 +305,7 @@
 
 - [ ] **Q1** 是否保留人群标签（crowd_tags）功能？目前业务场景似乎未大量使用
 - [ ] **Q2** 消息队列选型：RabbitMQ / Kafka / Redis Stream / 先不做？
-- [ ] **Q3** 是否需要管理后台接口（CRUD 活动/折扣/商品）？
+- [ ] **Q3** 是否需要管理后台 CRUD 接口（活动/折扣/商品）？~~已有 admin config API~~
 - [ ] **Q4** 支付网关先对接微信还是支付宝？还是先做 Mock 够用？
 
 ---
