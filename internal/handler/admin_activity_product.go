@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"log/slog"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
@@ -22,7 +23,8 @@ func NewAdminActivityProductHandler(db *gorm.DB) *AdminActivityProductHandler {
 func (h *AdminActivityProductHandler) ListActivityProducts(c *gin.Context) {
 	var mappings []model.ActivityProduct
 	if err := h.db.WithContext(c.Request.Context()).Find(&mappings).Error; err != nil {
-		response.FailHTTP(c, 500, err.Error())
+		slog.Error("admin: internal error", "error", err)
+		response.FailHTTP(c, 500, "internal server error")
 		return
 	}
 	response.Success(c, mappings)
@@ -40,7 +42,8 @@ func (h *AdminActivityProductHandler) CreateActivityProduct(c *gin.Context) {
 		return
 	}
 	if err := h.db.WithContext(c.Request.Context()).Create(&m).Error; err != nil {
-		response.FailHTTP(c, 500, err.Error())
+		slog.Error("admin: internal error", "error", err)
+		response.FailHTTP(c, 500, "internal server error")
 		return
 	}
 	response.Success(c, m)

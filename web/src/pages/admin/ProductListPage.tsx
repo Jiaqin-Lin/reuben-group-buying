@@ -10,6 +10,7 @@ import { ErrorState } from '../../components/ui/ErrorState';
 import { useToast } from '../../context/ToastContext';
 import { formatPrice } from '../../utils/format';
 import { getErrorMessage } from '../../utils/constants';
+import { required, priceFormat, validateForm, type FieldErrors } from '../../utils/validate';
 import type { Product } from '../../api/types';
 
 const emptyForm = { goods_id: '', goods_name: '', original_price: '' };
@@ -20,6 +21,7 @@ export function ProductListPage() {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Product | null>(null);
   const [form, setForm] = useState(emptyForm);
+  const [errors, setErrors] = useState<FieldErrors>({});
 
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['admin', 'products'],
@@ -44,14 +46,17 @@ export function ProductListPage() {
     onError: (e: Error) => addToast(getErrorMessage((e as { code?: string }).code || ''), 'error'),
   });
 
-  const openCreate = () => { setEditing(null); setForm(emptyForm); setShowForm(true); };
-  const openEdit = (p: Product) => { setEditing(p); setForm({ goods_id: p.goods_id, goods_name: p.goods_name, original_price: p.original_price }); setShowForm(true); };
+  const openCreate = () => { setEditing(null); setForm(emptyForm); setErrors({}); setShowForm(true); };
+  const openEdit = (p: Product) => { setEditing(p); setForm({ goods_id: p.goods_id, goods_name: p.goods_name, original_price: p.original_price }); setErrors({}); setShowForm(true); };
 
   const handleSave = () => {
-    if (!/^\d+(\.\d{1,2})?$/.test(form.original_price)) {
-      addToast('请输入合法的价格（如 100 或 100.00）', 'error');
-      return;
-    }
+    const errs = validateForm([
+      { field: 'goods_id', check: () => editing ? null : required(form.goods_id, '商品ID') },
+      { field: 'goods_name', check: () => required(form.goods_name, '名称') },
+      { field: 'original_price', check: () => required(form.original_price, '原价') || priceFormat(form.original_price, '原价') },
+    ]);
+    if (Object.keys(errs).length > 0) { setErrors(errs); return; }
+
     if (editing) updateMut.mutate({ id: editing.goods_id, data: form });
     else createMut.mutate(form as Partial<Product>);
   };
@@ -77,7 +82,9 @@ export function ProductListPage() {
             </tr>
           </thead>
           <tbody>
-            {data?.map((p) => (
+            {(!data || data.length === 0) ? (
+						<tr><td colSpan={10} className="px-6 py-12 text-center text-[var(--color-text-secondary)]">暂无数据</td></tr>
+					) : (data.map((p) => (
               <tr key={p.goods_id} className="border-b border-[#EAEAEA] last:border-0">
                 <td className="px-4 py-3 text-sm font-mono">{p.goods_id}</td>
                 <td className="px-4 py-3 text-sm">{p.goods_name}</td>
@@ -89,20 +96,20 @@ export function ProductListPage() {
                   </div>
                 </td>
               </tr>
-            ))}
+            )))}
           </tbody>
         </table>
       </Card>
 
       <Modal open={showForm} onClose={() => setShowForm(false)} title={editing ? '编辑商品' : '新建商品'}>
         <div className="flex flex-col gap-4">
-          <Input label="商品 ID" value={form.goods_id} onChange={e => setForm({ ...form, goods_id: e.target.value })} disabled={!!editing} />
-          <Input label="名称" value={form.goods_name} onChange={e => setForm({ ...form, goods_name: e.target.value })} />
-          <Input label="原价" value={form.original_price} onChange={e => setForm({ ...form, original_price: e.target.value })} placeholder="100.00" />
+          <Input label="商品 ID" value={form.goods_id} onChange={e => { setForm({ ...form, goods_id: e.target.value }); setErrors(prev => ({ ...prev, goods_id: '' })); }} disabled={!!editing} error={errors.goods_id} />
+          <Input label="名称" value={form.goods_name} onChange={e => setForm({ ...form, goods_name: e.target.value })} error={errors.goods_name} />
+          <Input label="原价" value={form.original_price} onChange={e => { setForm({ ...form, original_price: e.target.value }); setErrors(prev => ({ ...prev, original_price: '' })); }} placeholder="100.00" error={errors.original_price} />
         </div>
         <div className="flex justify-end gap-3 mt-6">
           <Button variant="secondary" onClick={() => setShowForm(false)}>取消</Button>
-          <Button onClick={handleSave} loading={createMut.isPending || updateMut.isPending}>{editing ? '保存' : '创建'}</Button>
+          <Button onClick={handleSave} loading={createMut.isPending || updateMut.isPending} disabled={Object.keys(errors).length > 0}>{editing ? '保存' : '创建'}</Button>
         </div>
       </Modal>
     </div>

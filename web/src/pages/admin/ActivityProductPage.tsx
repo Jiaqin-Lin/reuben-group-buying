@@ -9,6 +9,7 @@ import { Loading } from '../../components/ui/Loading';
 import { ErrorState } from '../../components/ui/ErrorState';
 import { useToast } from '../../context/ToastContext';
 import { getErrorMessage } from '../../utils/constants';
+import { required, validateForm, type FieldErrors } from '../../utils/validate';
 import type { ActivityProduct } from '../../api/types';
 
 const emptyForm = { source: '', channel: '', goods_id: '', activity_id: 0 };
@@ -18,6 +19,7 @@ export function ActivityProductPage() {
   const { addToast } = useToast();
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(emptyForm);
+  const [errors, setErrors] = useState<FieldErrors>({});
 
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['admin', 'activity-products'],
@@ -37,6 +39,17 @@ export function ActivityProductPage() {
     onError: (e: Error) => addToast(getErrorMessage((e as { code?: string }).code || ''), 'error'),
   });
 
+  const handleCreate = () => {
+    const errs = validateForm([
+      { field: 'source', check: () => required(form.source, '来源') },
+      { field: 'channel', check: () => required(form.channel, '渠道') },
+      { field: 'goods_id', check: () => required(form.goods_id, '商品ID') },
+      { field: 'activity_id', check: () => required(form.activity_id, '活动ID') },
+    ]);
+    if (Object.keys(errs).length > 0) { setErrors(errs); return; }
+    createMut.mutate(form as Partial<ActivityProduct>);
+  };
+
   if (isLoading) return <Loading lines={8} />;
   if (isError) return <ErrorState message="加载失败" onRetry={() => refetch()} />;
 
@@ -44,7 +57,7 @@ export function ActivityProductPage() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-xl font-medium text-[var(--color-text-primary)]">活动商品映射</h1>
-        <Button size="sm" onClick={() => { setForm(emptyForm); setShowForm(true); }}>添加映射</Button>
+        <Button size="sm" onClick={() => { setForm(emptyForm); setErrors({}); setShowForm(true); }}>添加映射</Button>
       </div>
 
       <Card padding="none" className="overflow-x-auto">
@@ -59,7 +72,9 @@ export function ActivityProductPage() {
             </tr>
           </thead>
           <tbody>
-            {data?.map((m) => (
+            {(!data || data.length === 0) ? (
+						<tr><td colSpan={10} className="px-6 py-12 text-center text-[var(--color-text-secondary)]">暂无数据</td></tr>
+					) : (data.map((m) => (
               <tr key={`${m.source}-${m.channel}-${m.goods_id}`} className="border-b border-[#EAEAEA] last:border-0">
                 <td className="px-4 py-3 text-sm">{m.source}</td>
                 <td className="px-4 py-3 text-sm">{m.channel}</td>
@@ -69,21 +84,21 @@ export function ActivityProductPage() {
                   <Button variant="ghost" size="sm" onClick={() => { if (confirm('确认删除?')) deleteMut.mutate({ source: m.source, channel: m.channel, goodsId: m.goods_id }); }}>删除</Button>
                 </td>
               </tr>
-            ))}
+            )))}
           </tbody>
         </table>
       </Card>
 
       <Modal open={showForm} onClose={() => setShowForm(false)} title="添加映射">
         <div className="flex flex-col gap-4">
-          <Input label="来源 (source)" value={form.source} onChange={e => setForm({ ...form, source: e.target.value })} placeholder="APP" />
-          <Input label="渠道 (channel)" value={form.channel} onChange={e => setForm({ ...form, channel: e.target.value })} placeholder="WECHAT" />
-          <Input label="商品 ID" value={form.goods_id} onChange={e => setForm({ ...form, goods_id: e.target.value })} />
-          <Input label="活动 ID" type="number" value={String(form.activity_id)} onChange={e => setForm({ ...form, activity_id: Number(e.target.value) })} />
+          <Input label="来源 (source)" value={form.source} onChange={e => { setForm({ ...form, source: e.target.value }); setErrors(prev => ({ ...prev, source: '' })); }} placeholder="APP" error={errors.source} />
+          <Input label="渠道 (channel)" value={form.channel} onChange={e => { setForm({ ...form, channel: e.target.value }); setErrors(prev => ({ ...prev, channel: '' })); }} placeholder="WECHAT" error={errors.channel} />
+          <Input label="商品 ID" value={form.goods_id} onChange={e => { setForm({ ...form, goods_id: e.target.value }); setErrors(prev => ({ ...prev, goods_id: '' })); }} error={errors.goods_id} />
+          <Input label="活动 ID" type="number" value={String(form.activity_id)} onChange={e => { setForm({ ...form, activity_id: Number(e.target.value) }); setErrors(prev => ({ ...prev, activity_id: '' })); }} error={errors.activity_id} />
         </div>
         <div className="flex justify-end gap-3 mt-6">
           <Button variant="secondary" onClick={() => setShowForm(false)}>取消</Button>
-          <Button onClick={() => createMut.mutate(form as Partial<ActivityProduct>)} loading={createMut.isPending}>添加</Button>
+          <Button onClick={handleCreate} loading={createMut.isPending} disabled={Object.keys(errors).length > 0}>添加</Button>
         </div>
       </Modal>
     </div>

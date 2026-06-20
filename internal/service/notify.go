@@ -155,7 +155,13 @@ func (s *NotifyService) execBatch(ctx context.Context, tasks []model.NotifyTask)
 		sem <- struct{}{}
 
 		go func() {
-			defer func() { <-sem }()
+			defer func() {
+				<-sem
+				if r := recover(); r != nil {
+					slog.ErrorContext(ctx, "notify: panic in execOneTask", "task_id", task.ID, "panic", r)
+					results <- false
+				}
+			}()
 			ok := s.execOneTask(ctx, &task)
 			results <- ok
 		}()

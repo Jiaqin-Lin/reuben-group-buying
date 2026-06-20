@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"log/slog"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -26,7 +27,8 @@ func NewAdminActivityHandler(db *gorm.DB) *AdminActivityHandler {
 func (h *AdminActivityHandler) ListActivities(c *gin.Context) {
 	var activities []model.Activity
 	if err := h.db.WithContext(c.Request.Context()).Find(&activities).Error; err != nil {
-		response.FailHTTP(c, 500, err.Error())
+		slog.Error("admin: internal error", "error", err)
+		response.FailHTTP(c, 500, "internal server error")
 		return
 	}
 	response.Success(c, activities)
@@ -54,8 +56,27 @@ func (h *AdminActivityHandler) CreateActivity(c *gin.Context) {
 		response.Fail(c, errcode.CodeInvalidParam)
 		return
 	}
+	if a.ActivityID <= 0 || a.Name == "" || a.DiscountID == "" {
+		response.FailWithMsg(c, errcode.CodeInvalidParam, "activity_id, name, discount_id 为必填项")
+		return
+	}
+	if a.TargetCount < 2 {
+		response.FailWithMsg(c, errcode.CodeInvalidParam, "target_count 需 >= 2")
+		return
+	}
+	if a.TakeLimit < 1 {
+		a.TakeLimit = 1
+	}
+	if a.ValidMinutes < 1 {
+		a.ValidMinutes = 5
+	}
+	if !a.StartTime.IsZero() && !a.EndTime.IsZero() && !a.EndTime.After(a.StartTime) {
+		response.FailWithMsg(c, errcode.CodeInvalidParam, "end_time 需晚于 start_time")
+		return
+	}
 	if err := h.db.WithContext(c.Request.Context()).Create(&a).Error; err != nil {
-		response.FailHTTP(c, 500, err.Error())
+		slog.Error("admin: internal error", "error", err)
+		response.FailHTTP(c, 500, "internal server error")
 		return
 	}
 	response.Success(c, a)
@@ -114,7 +135,8 @@ func (h *AdminActivityHandler) DeleteActivity(c *gin.Context) {
 func (h *AdminActivityHandler) ListDiscounts(c *gin.Context) {
 	var discounts []model.Discount
 	if err := h.db.WithContext(c.Request.Context()).Find(&discounts).Error; err != nil {
-		response.FailHTTP(c, 500, err.Error())
+		slog.Error("admin: internal error", "error", err)
+		response.FailHTTP(c, 500, "internal server error")
 		return
 	}
 	response.Success(c, discounts)
@@ -138,8 +160,17 @@ func (h *AdminActivityHandler) CreateDiscount(c *gin.Context) {
 		response.Fail(c, errcode.CodeInvalidParam)
 		return
 	}
+	if d.DiscountID == "" || d.Name == "" || d.Expression == "" {
+		response.FailWithMsg(c, errcode.CodeInvalidParam, "discount_id, name, expression 为必填项")
+		return
+	}
+	if d.PlanType != "ZJ" && d.PlanType != "MJ" && d.PlanType != "ZK" && d.PlanType != "N" {
+		response.FailWithMsg(c, errcode.CodeInvalidParam, "plan_type 需为 ZJ/MJ/ZK/N 之一")
+		return
+	}
 	if err := h.db.WithContext(c.Request.Context()).Create(&d).Error; err != nil {
-		response.FailHTTP(c, 500, err.Error())
+		slog.Error("admin: internal error", "error", err)
+		response.FailHTTP(c, 500, "internal server error")
 		return
 	}
 	response.Success(c, d)

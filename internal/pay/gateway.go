@@ -7,6 +7,7 @@ package pay
 import (
 	"context"
 	"fmt"
+	"encoding/json"
 
 	"github.com/reuben/group-buying/internal/model"
 )
@@ -84,14 +85,24 @@ func (m *Mock) QueryOrder(_ context.Context, orderID string) (*QueryResult, erro
 }
 
 // VerifyNotify Mock 验签。
-// 总是通过，返回支付成功通知。
+// 尝试从 raw body 解析 JSON 获取 order_id 作为 OutTradeNo，
+// 解析失败则 fallback 到 "MOCK_DEFAULT"。
 func (m *Mock) VerifyNotify(_ context.Context, raw []byte) (*Notify, error) {
+	outTradeNo := "MOCK_DEFAULT"
+	if raw != nil {
+		var body struct {
+			OrderID string `json:"order_id"`
+		}
+		if err := json.Unmarshal(raw, &body); err == nil && body.OrderID != "" {
+			outTradeNo = body.OrderID
+		}
+	}
 	return &Notify{
-		TradeNo:     "MOCK_NOTIFY",
-		OutTradeNo:  "",
+		TradeNo:     "MOCK_NOTIFY_" + outTradeNo,
+		OutTradeNo:  outTradeNo,
 		TotalAmount: "0.00",
 		Status:      "TRADE_SUCCESS",
-		NotifyID:    "MOCK_NOTIFY_ID",
+		NotifyID:    "MOCK_NOTIFY_" + outTradeNo,
 		GmtPayment:  "",
 	}, nil
 }

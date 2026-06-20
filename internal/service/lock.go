@@ -163,14 +163,14 @@ func (s *LockService) Lock(ctx context.Context, req LockRequest) (*LockResult, e
 	if err != nil {
 		return nil, fmt.Errorf("lock: find activity: %w", err)
 	}
-	activeCount, err := s.orderRepo.CountActiveOrdersByUserActivity(ctx, req.UserID, req.ActivityID)
+	paidCount, err := s.orderRepo.CountPaidOrdersByUserActivity(ctx, req.UserID, req.ActivityID)
 	if err != nil {
 		return nil, fmt.Errorf("lock: check take_limit: %w", err)
 	}
-	if activity.TakeLimit > 0 && int(activeCount) >= activity.TakeLimit {
+	if activity.TakeLimit > 0 && int(paidCount) >= activity.TakeLimit {
 		return nil, &LockError{
 			Code: errcode.CodeTakeLimitReached,
-			Err:  fmt.Errorf("take limit reached: %d/%d (locked+paid)", activeCount, activity.TakeLimit),
+			Err:  fmt.Errorf("take limit reached: %d/%d (paid)", paidCount, activity.TakeLimit),
 		}
 	}
 
@@ -315,7 +315,7 @@ func (s *LockService) lockJoinTeam(ctx context.Context, req LockRequest, trial *
 		}
 		if exists {
 			s.cacheRepo.ReleaseStock(ctx, req.ActivityID, req.TeamID, req.OutTradeNo)
-			return nil, &LockError{Code: errcode.CodeTakeLimitReached, Err: fmt.Errorf("user %s already joined team %s", req.UserID, req.TeamID)}
+			return nil, &LockError{Code: errcode.CodeDuplicateEntry, Err: fmt.Errorf("user %s already joined team %s", req.UserID, req.TeamID)}
 		}
 
 	order := &model.Order{
@@ -408,7 +408,8 @@ func (s *LockService) createPayment(ctx context.Context, result *LockResult) (st
 		ExpireAt:   time.Now().Add(15 * time.Minute),
 	}
 	if err := s.paymentRepo.CreatePayment(ctx, payment); err != nil {
-		slog.WarnContext(ctx, "lock: save payment record failed", "order_id", result.OrderID, "error", err)
+		slog.ErrorContext(ctx, "lock: save payment record failed", "order_id", result.OrderID, "error", err)
+		return "", fmt.Errorf("create payment record: %w", err)
 	}
 
 	return payResult.PayURL, nil
@@ -448,7 +449,7 @@ func (s *LockService) findExistingOrder(ctx context.Context, userID, outTradeNo 
 	}
 	// 校验 userId 一致
 	if order.UserID != userID {
-		return nil, &LockError{Code: errcode.CodeOrderNotFound, Err: fmt.Errorf("out_trade_no %s belongs to different user", outTradeNo)}
+		return nil, &LockError{Code: errcode.CodeAuthFailed, Err: fmt.Errorf("out_trade_no %s belongs to different user", outTradeNo)}
 	}
 	return buildLockResult(order, order.TeamID), nil
 }

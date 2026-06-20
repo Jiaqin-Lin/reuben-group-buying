@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"log/slog"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
@@ -22,17 +23,27 @@ func (h *AdminDashboardHandler) GetDashboard(c *gin.Context) {
 
 	var activeActivities, formingTeams, completeTeams, failedTeams, todayOrders int64
 
-	_ = h.db.WithContext(ctx).Table("activities").
+	if err := h.db.WithContext(ctx).Table("activities").
 		Where("status = 1 AND start_time <= NOW() AND end_time >= NOW()").
-		Count(&activeActivities).Error
-	_ = h.db.WithContext(ctx).Table("teams").
-		Where("status = 0").Count(&formingTeams).Error
-	_ = h.db.WithContext(ctx).Table("teams").
-		Where("status = 1").Count(&completeTeams).Error
-	_ = h.db.WithContext(ctx).Table("teams").
-		Where("status = 2").Count(&failedTeams).Error
-	_ = h.db.WithContext(ctx).Table("orders").
-		Where("DATE(created_at) = CURDATE()").Count(&todayOrders).Error
+		Count(&activeActivities).Error; err != nil {
+		slog.Error("dashboard: query failed", "error", err)
+	}
+	if err := h.db.WithContext(ctx).Table("teams").
+		Where("status = 0").Count(&formingTeams).Error; err != nil {
+		slog.Error("dashboard: query failed", "error", err)
+	}
+	if err := h.db.WithContext(ctx).Table("teams").
+		Where("status = 1").Count(&completeTeams).Error; err != nil {
+		slog.Error("dashboard: query failed", "error", err)
+	}
+	if err := h.db.WithContext(ctx).Table("teams").
+		Where("status = 2").Count(&failedTeams).Error; err != nil {
+		slog.Error("dashboard: query failed", "error", err)
+	}
+	if err := h.db.WithContext(ctx).Table("orders").
+		Where("DATE(created_at) = CURDATE()").Count(&todayOrders).Error; err != nil {
+		slog.Error("dashboard: query failed", "error", err)
+	}
 
 	type recentOrder struct {
 		OrderID    string `json:"order_id"`
@@ -43,9 +54,11 @@ func (h *AdminDashboardHandler) GetDashboard(c *gin.Context) {
 		CreatedAt  string `json:"created_at"`
 	}
 	var recent []recentOrder
-	_ = h.db.WithContext(ctx).Table("orders").
+	if err := h.db.WithContext(ctx).Table("orders").
 		Select("order_id, out_trade_no, user_id, pay_price, status, created_at").
-		Order("id DESC").Limit(5).Find(&recent).Error
+		Order("id DESC").Limit(5).Find(&recent).Error; err != nil {
+		slog.Error("dashboard: query failed", "error", err)
+	}
 
 	response.Success(c, gin.H{
 		"active_activities": activeActivities,

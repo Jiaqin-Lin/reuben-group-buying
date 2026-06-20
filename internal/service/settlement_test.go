@@ -270,8 +270,8 @@ func TestSettle_TakeLimitExceeded(t *testing.T) {
 
 	// 活动 500002 限购 1 次
 	// 锁两个单
-	first := lockForSettle(t, "U_LIMIT", "EXT_LIMIT_001", "G_SETTLE2", 500002, "")
-	lockForSettle(t, "U_LIMIT", "EXT_LIMIT_002", "G_SETTLE2", 500002, first.TeamID)
+	lockForSettle(t, "U_LIMIT", "EXT_LIMIT_001", "G_SETTLE2", 500002, "")
+	lockForSettle(t, "U_LIMIT", "EXT_LIMIT_002", "G_SETTLE2", 500002, "")
 
 	// 第一个结算成功
 	_, err := svc.Settle(ctx, SettlementRequest{

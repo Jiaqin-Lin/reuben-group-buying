@@ -6,9 +6,10 @@ import { Button } from '../ui/Button';
 
 interface HeaderProps {
   variant?: 'user' | 'admin';
+  onToggleMenu?: () => void;
 }
 
-export function Header({ variant = 'user' }: HeaderProps) {
+export function Header({ variant = 'user', onToggleMenu }: HeaderProps) {
   const { userId, setUserId, logout, isLoggedIn, isAdmin } = useAuth();
   const queryClient = useQueryClient();
   const [switching, setSwitching] = useState(false);
@@ -27,7 +28,19 @@ export function Header({ variant = 'user' }: HeaderProps) {
   return (
     <header className="sticky top-0 z-40 bg-[var(--color-surface)]/80 backdrop-blur-sm border-b border-[#EAEAEA]">
       <div className="max-w-6xl mx-auto px-6 h-14 flex items-center justify-between">
-        <Link
+        <div className="flex items-center gap-3">
+          {variant === 'admin' && onToggleMenu && (
+            <button
+              onClick={onToggleMenu}
+              className="md:hidden flex items-center justify-center w-8 h-8 rounded-md hover:bg-[var(--color-canvas)] transition-colors cursor-pointer"
+              aria-label="切换菜单"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+                <path d="M3 6h18M3 12h18M3 18h18" />
+              </svg>
+            </button>
+          )}
+          <Link
           to={variant === 'admin' ? '/admin' : '/'}
           className="text-base font-medium text-[var(--color-text-primary)] hover:text-[var(--color-accent)] transition-colors no-underline"
         >
@@ -38,6 +51,7 @@ export function Header({ variant = 'user' }: HeaderProps) {
             </span>
           )}
         </Link>
+        </div>
 
         <div className="flex items-center gap-3">
           {variant === 'user' && isLoggedIn && (

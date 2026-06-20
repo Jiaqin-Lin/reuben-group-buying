@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"log/slog"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -26,7 +27,8 @@ func NewAdminCrowdHandler(db *gorm.DB) *AdminCrowdHandler {
 func (h *AdminCrowdHandler) ListTags(c *gin.Context) {
 	var tags []model.CrowdTag
 	if err := h.db.WithContext(c.Request.Context()).Find(&tags).Error; err != nil {
-		response.FailHTTP(c, 500, err.Error())
+		slog.Error("admin: internal error", "error", err)
+		response.FailHTTP(c, 500, "internal server error")
 		return
 	}
 	response.Success(c, tags)
@@ -50,8 +52,13 @@ func (h *AdminCrowdHandler) CreateTag(c *gin.Context) {
 		response.Fail(c, errcode.CodeInvalidParam)
 		return
 	}
+	if tag.TagID == "" || tag.TagName == "" {
+		response.FailWithMsg(c, errcode.CodeInvalidParam, "tag_id, tag_name 为必填项")
+		return
+	}
 	if err := h.db.WithContext(c.Request.Context()).Create(&tag).Error; err != nil {
-		response.FailHTTP(c, 500, err.Error())
+		slog.Error("admin: internal error", "error", err)
+		response.FailHTTP(c, 500, "internal server error")
 		return
 	}
 	response.Success(c, tag)
@@ -144,7 +151,8 @@ func (h *AdminCrowdHandler) AddMember(c *gin.Context) {
 		UserID: req.UserID,
 	}
 	if err := h.db.WithContext(c.Request.Context()).Create(&member).Error; err != nil {
-		response.FailHTTP(c, 500, err.Error())
+		slog.Error("admin: internal error", "error", err)
+		response.FailHTTP(c, 500, "internal server error")
 		return
 	}
 	response.Success(c, member)

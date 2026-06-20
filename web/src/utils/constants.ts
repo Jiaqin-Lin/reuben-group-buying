@@ -23,7 +23,7 @@ export const TeamStatusLabel: Record<number, string> = {
   0: '成团中',
   1: '已成团',
   2: '已失败',
-  3: '已成团(部分退款)',
+  3: '已成团(含退款)',
 };
 
 /** Payment status enum */
@@ -63,6 +63,14 @@ export const NotifyStatusLabel: Record<number, string> = {
   3: '已失败',
 };
 
+
+/** Shared business constants */
+export const DEFAULT_SOURCE = 'APP';
+export const DEFAULT_CHANNEL = 'WECHAT';
+export const DEFAULT_GOODS_ID = 'G_ZJ';
+export const POLL_INTERVAL = 3000; // 3s
+export const PAYMENT_TTL = 5 * 60; // 5 min (fallback, prefer API response valid_minutes)
+
 /** Error code to Chinese message mapping */
 export const ErrorMessages: Record<string, string> = {
   '0000': '成功',
@@ -90,6 +98,7 @@ export const ErrorMessages: Record<string, string> = {
   P0002: '支付通知验签失败',
   P0003: '支付通知订单不存在',
   P0004: '退款失败',
+  P0005: '退款网关超时，请稍后重试',
 };
 
 export function getErrorMessage(code: string): string {

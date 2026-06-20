@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"log/slog"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
@@ -22,7 +23,8 @@ func NewAdminProductHandler(db *gorm.DB) *AdminProductHandler {
 func (h *AdminProductHandler) ListProducts(c *gin.Context) {
 	var products []model.Product
 	if err := h.db.WithContext(c.Request.Context()).Find(&products).Error; err != nil {
-		response.FailHTTP(c, 500, err.Error())
+		slog.Error("admin: internal error", "error", err)
+		response.FailHTTP(c, 500, "internal server error")
 		return
 	}
 	response.Success(c, products)
@@ -35,8 +37,13 @@ func (h *AdminProductHandler) CreateProduct(c *gin.Context) {
 		response.Fail(c, errcode.CodeInvalidParam)
 		return
 	}
+	if p.GoodsID == "" || p.GoodsName == "" {
+		response.FailWithMsg(c, errcode.CodeInvalidParam, "goods_id, goods_name 为必填项")
+		return
+	}
 	if err := h.db.WithContext(c.Request.Context()).Create(&p).Error; err != nil {
-		response.FailHTTP(c, 500, err.Error())
+		slog.Error("admin: internal error", "error", err)
+		response.FailHTTP(c, 500, "internal server error")
 		return
 	}
 	response.Success(c, p)

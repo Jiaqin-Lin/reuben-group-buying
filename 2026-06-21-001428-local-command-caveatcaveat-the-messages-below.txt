@@ -1,0 +1,92 @@
+  🔴 后端 — 必须修
+
+  1. take_limit 无 DB 层兜底
+  repository/order.go:468-552 — SettleOrder 事务内加两步：
+  (2.5) SELECT take_limit FROM activities WHERE activity_id = ?
+  (2.6) SELECT COUNT(*) FROM orders WHERE user_id=? AND activity_id=? AND status
+  IN (0,1)
+         IF count >= take_limit → 回滚，返回 ErrTakeLimitReached
+  这样 Redis 只是快速拒绝的软检查，DB 是最终防线。Redis INCR
+  失败、冷启动计数不准、TOCTOU 竞态，全部由 DB 兜底。
+
+  2. Redis take_count key 永不过期 → 内存泄漏
+  redisx/cache.go:60-67 — IncrTakeCount 后补 Expire。虽然 DB 兜底了，但 key
+  永远不删也会撑爆 Redis。
+
+  3. 支付宝私钥提交到 Git
+  config.yaml:38-39 — 改环境变量 ${ALIPAY_PRIVATE_KEY}。
+
+  4. Mock VerifyNotify 返回空 OutTradeNo
+  pay/gateway.go:91 — OutTradeNo: ""
+  改成能解析的订单号，否则支付回调流程完全测不了。
+
+  5. DB 错误信息泄露给客户端
+  9 个 admin handler — FailHTTP(c, 500, err.Error()) 改成 FailHTTP(c, 500, 
+  "internal server error")，原始错误只打日志。
+
+  6. 管理端 CRUD 无输入校验
+  handler/admin_activity.go:51-61 等 — CreateActivity/CreateProduct 直接
+  db.Create，零校验。空 name、start > end 等脏数据静默入库。
+
+  7. 退款先调网关再更新 DB
+  service/refund.go:193-206 — 先调 payGateway.Refund，再更新 DB 状态。DB
+  更新失败时网关已扣款。调换顺序：先 DB 后网关，网关失败回滚 DB。
+
+  8. 支付网关下单成功但本地 Payment 落库失败 → 孤儿支付
+  service/lock.go:410-412 — CreatePayment 失败只打 Warn，不阻断。支付宝已生成 QR
+  码但本地无记录，无法对账和退款。失败应返回 error 或调网关 CancelOrder 清理。
+
+  ---
+  🟠 后端 — 应该修
+
+
+  11. notify goroutine 无 panic recovery
+  service/notify.go — execBatch 里的 goroutine 加 defer recover()。
+
+  12. Admin Dashboard 吞掉所有查询错误
+  handler/admin_dashboard.go:25-48 — 5 个 _ = ... .Error。DB 故障时面板显示全
+  0，像一切正常。
+
+  13. 加团重复报"次数上限"
+  service/lock.go:318 — 用户重复进同一个团返回
+  CodeTakeLimitReached（"参与次数已达上限"），实际是重复加团。
+
+  14. 订单属于他人时报"订单不存在"
+  service/lock.go:450-453 — out_trade_no 存在但 userId 不对 →
+  CodeOrderNotFound。应返回权限错误。
+
+  15. CrowdTagDetail 缺 json tag
+  model/crowd_tag_detail.go:9 — UserID string 无 json:"user_id"，序列化出
+  "UserID"（其他模型全 snake_case）。
+
+  16. 缺少请求体大小限制
+  app/app.go:202 — 加 body size 中间件（如 1MB）。
+
+  ---
+  🔴 前端 — 必须修
+
+  17. HTTP 错误丢弃业务错误码
+  api/client.ts:63-69 — HTTP 400/500 时先检查 envelope.code，再检查
+  res.ok。否则后端所有业务错误到前端全变成 "HTTP 400: Bad Request"。
+
+  18. 首页 1 秒 tick 整页重渲染
+  pages/home/HomePage.tsx:130-139 — 倒计时 tick 触发整页（Hero +
+  所有卡片）每秒重渲染。把 TeamList + 倒计时拆成独立组件。
+
+  19. 管理端表单零客户端校验
+  pages/admin/ActivityListPage.tsx:88, DiscountListPage.tsx:62 —
+  加必填项/范围校验，利用 Input 的 error prop。
+
+  20. 管理端移动端无导航
+  components/layout/Sidebar.tsx:23 — hidden md:block
+  移动端侧栏消失且无替代。加汉堡菜单 + drawer。
+
+  21. 硬编码业务常量散落多处
+  PAYMENT_TTL 在两个文件重复定义，DEFAULT_SOURCE/CHANNEL/GOODS_ID 硬编码。统一到
+  constants.ts，PAYMENT_TTL 从 trial API 的 valid_minutes 获取。
+
+  ---
+  🟠 前端 — 应该修
+
+  22. 管理端列表空数据无提示
+  4 个 admin page — API 返回空数组时只有表头，无"暂无数据"。

@@ -228,58 +228,6 @@ func TestOrderRepo_JoinTeamWithOrder_Full(t *testing.T) {
 	}
 }
 
-func TestOrderRepo_UpdateOrderStatus(t *testing.T) {
-	if testDB == nil {
-		t.Skip("mysql not available")
-	}
-	repo := NewOrderRepo(testDB)
-	ctx := context.Background()
-
-	createTestTeam(t, "T_UPD_001")
-	createTestOrder(t, "ORD_UPD_001", "EXT_UPD_001", "T_UPD_001", "USER030", model.OrderStatusLocked)
-
-	err := repo.UpdateOrderStatus(ctx, "ORD_UPD_001", model.OrderStatusPaid)
-	if err != nil {
-		t.Fatalf("UpdateOrderStatus: %v", err)
-	}
-
-	o, err := repo.FindOrderByOrderID(ctx, "ORD_UPD_001")
-	if err != nil {
-		t.Fatalf("verify order: %v", err)
-	}
-	if o.Status != model.OrderStatusPaid {
-		t.Errorf("expected status=1 (paid), got %d", o.Status)
-	}
-}
-
-func TestOrderRepo_UpdateTeamCounters(t *testing.T) {
-	if testDB == nil {
-		t.Skip("mysql not available")
-	}
-	repo := NewOrderRepo(testDB)
-	ctx := context.Background()
-
-	createTestTeam(t, "T_CTR_001")
-	testDB.Exec("UPDATE teams SET lock_count = 2, complete_count = 1 WHERE team_id = ?", "T_CTR_001")
-
-	// 结算场景：lock_count-1, complete_count+1
-	err := repo.UpdateTeamCounters(ctx, "T_CTR_001", -1, 1)
-	if err != nil {
-		t.Fatalf("UpdateTeamCounters: %v", err)
-	}
-
-	team, err := repo.FindTeamByID(ctx, "T_CTR_001")
-	if err != nil {
-		t.Fatalf("verify team: %v", err)
-	}
-	if team.LockCount != 1 {
-		t.Errorf("expected lock_count=1, got %d", team.LockCount)
-	}
-	if team.CompleteCount != 2 {
-		t.Errorf("expected complete_count=2, got %d", team.CompleteCount)
-	}
-}
-
 func TestOrderRepo_FindTimeoutOrders(t *testing.T) {
 	if testDB == nil {
 		t.Skip("mysql not available")

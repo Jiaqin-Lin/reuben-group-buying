@@ -48,8 +48,9 @@ type CacheRepository interface {
 	// --- 用户限购计数 ---
 
 	// IncrTakeCount 原子增加用户参与次数（支付成功时 +1）。
+	// ttl 控制 key 过期时间，对齐活动结束时间以防内存泄漏。
 	// 返回增加后的值。
-	IncrTakeCount(ctx context.Context, activityID int64, userID string) (int64, error)
+	IncrTakeCount(ctx context.Context, activityID int64, userID string, ttl time.Duration) (int64, error)
 
 	// GetTakeCount 获取用户当前参与次数。
 	GetTakeCount(ctx context.Context, activityID int64, userID string) (int64, error)
@@ -159,8 +160,8 @@ func (r *redisCacheRepo) IsTeamFull(ctx context.Context, activityID int64, teamI
 
 // --- 用户限购计数 ---
 
-func (r *redisCacheRepo) IncrTakeCount(ctx context.Context, activityID int64, userID string) (int64, error) {
-	count, err := redisx.IncrTakeCount(ctx, r.rdb, activityID, userID)
+func (r *redisCacheRepo) IncrTakeCount(ctx context.Context, activityID int64, userID string, ttl time.Duration) (int64, error) {
+	count, err := redisx.IncrTakeCount(ctx, r.rdb, activityID, userID, ttl)
 	if err != nil {
 		return 0, fmt.Errorf("cache incr take count: %w", err)
 	}

@@ -162,11 +162,14 @@ func (s *SettlementService) Settle(ctx context.Context, req SettlementRequest) (
 				return s.idempotentResult(ctx, order)
 			}
 		}
+		if errors.Is(err, repository.ErrTakeLimitReached) {
+			return nil, &SettlementError{Code: errcode.CodeTakeLimitReached, Err: err}
+		}
 		return nil, fmt.Errorf("settlement: settle order: %w", err)
 	}
 
 	// 8. Redis INCR take_limit（DB 已成功，才递增计数）
-	takeCount, err := s.cacheRepo.IncrTakeCount(ctx, order.ActivityID, req.UserID)
+	takeCount, err := s.cacheRepo.IncrTakeCount(ctx, order.ActivityID, req.UserID, takeTTL)
 	if err != nil {
 		slog.ErrorContext(ctx, "settlement: incr take count failed", "error", err)
 		takeCount = currentTakeCount + 1

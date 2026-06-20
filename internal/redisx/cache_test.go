@@ -147,7 +147,7 @@ func TestIncrTakeCount(t *testing.T) {
 	ctx, cancel := newTestContext()
 	defer cancel()
 
-	count1, err := IncrTakeCount(ctx, testRDB, 100123, "USER001")
+	count1, err := IncrTakeCount(ctx, testRDB, 100123, "USER001", time.Hour)
 	if err != nil {
 		t.Fatalf("IncrTakeCount: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestIncrTakeCount(t *testing.T) {
 		t.Errorf("expected count 1 on first incr, got %d", count1)
 	}
 
-	count2, _ := IncrTakeCount(ctx, testRDB, 100123, "USER001")
+	count2, _ := IncrTakeCount(ctx, testRDB, 100123, "USER001", time.Hour)
 	if count2 != 2 {
 		t.Errorf("expected count 2 on second incr, got %d", count2)
 	}

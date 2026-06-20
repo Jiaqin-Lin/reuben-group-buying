@@ -36,7 +36,8 @@ const (
 	CodePayCreateFailed   = "P0001" // 创建支付单失败
 	CodePayNotifyVerify   = "P0002" // 支付回调验签失败
 	CodePayNotifyNotFound = "P0003" // 支付回调对应订单不存在
-	CodeRefundFailed      = "P0004" // 退款失败
+	CodeRefundFailed      = "P0004" // 退款失败（业务拒绝）
+	CodeRefundGatewayErr  = "P0005" // 退款网关异常（超时/网络，可重试）
 )
 
 // 错误码对应的默认消息
@@ -67,6 +68,7 @@ var codeMessages = map[string]string{
 	CodePayNotifyVerify:     "支付回调验签失败",
 	CodePayNotifyNotFound:   "支付回调对应订单不存在",
 	CodeRefundFailed:        "退款失败",
+	CodeRefundGatewayErr:    "退款网关超时，请稍后重试",
 }
 
 // Message 返回错误码对应的默认消息。

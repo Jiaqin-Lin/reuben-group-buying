@@ -6,6 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/url"
+	"os"
+	"syscall"
 
 	"gorm.io/gorm"
 
@@ -182,6 +186,7 @@ func (s *RefundService) unpaidRefund(ctx context.Context, order *model.Order) (*
 // paidRefund 已支付未成团退单（order=Paid, team=Forming）。
 //
 // 操作：
+//   - 先调支付网关退款（外部副作用优先，网关幂等，DB 失败可重试）
 //   - 订单 Paid → Refunded
 //   - 团 lock_count - 1, complete_count - 1
 //   - 创建 notify_task (category=trade_paid_refund)
@@ -189,19 +194,21 @@ func (s *RefundService) unpaidRefund(ctx context.Context, order *model.Order) (*
 func (s *RefundService) paidRefund(ctx context.Context, order *model.Order) (*RefundResult, error) {
 	slog.DebugContext(ctx, "refund: paid", "order_id", order.OrderID, "team_id", order.TeamID)
 
-	// 0. 调用支付网关退款（已支付的订单必须真实退款）
+	// 0. 先调用支付网关退款（外部副作用优先，DB 失败可重试）
 	if s.payGateway != nil {
 		if _, err := s.payGateway.Refund(ctx, order.OrderID, order.PayPrice); err != nil {
 			slog.ErrorContext(ctx, "refund paid: gateway refund failed", "order_id", order.OrderID, "error", err)
-			return nil, &RefundError{Code: errcode.CodeRefundFailed, Err: fmt.Errorf("gateway refund: %w", err)}
+			return nil, &RefundError{Code: refundErrCode(err), Err: fmt.Errorf("gateway refund: %w", err)}
 		}
 	}
 
-	// 1. 更新订单状态
+	// 1. 更新 DB 订单状态（Paid → Refunded）
 	if err := s.orderRepo.UpdateOrderStatusWithCheck(ctx, order.OrderID, model.OrderStatusPaid, model.OrderStatusRefunded); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return s.handleConcurrentRefund(ctx, order)
 		}
+		slog.ErrorContext(ctx, "refund paid: DB update failed after gateway refund",
+			"order_id", order.OrderID, "error", err)
 		return nil, fmt.Errorf("refund paid: update order: %w", err)
 	}
 
@@ -245,7 +252,7 @@ func (s *RefundService) paidTeamRefund(ctx context.Context, order *model.Order) 
 	if s.payGateway != nil {
 		if _, err := s.payGateway.Refund(ctx, order.OrderID, order.PayPrice); err != nil {
 			slog.ErrorContext(ctx, "refund paid team: gateway refund failed", "order_id", order.OrderID, "error", err)
-			return nil, &RefundError{Code: errcode.CodeRefundFailed, Err: fmt.Errorf("gateway refund: %w", err)}
+			return nil, &RefundError{Code: refundErrCode(err), Err: fmt.Errorf("gateway refund: %w", err)}
 		}
 	}
 
@@ -336,7 +343,7 @@ func (s *RefundService) paidRefundFailedTeam(ctx context.Context, order *model.O
 	if s.payGateway != nil {
 		if _, err := s.payGateway.Refund(ctx, order.OrderID, order.PayPrice); err != nil {
 			slog.ErrorContext(ctx, "refund paid failed team: gateway refund failed", "order_id", order.OrderID, "error", err)
-			return nil, &RefundError{Code: errcode.CodeRefundFailed, Err: fmt.Errorf("gateway refund: %w", err)}
+			return nil, &RefundError{Code: refundErrCode(err), Err: fmt.Errorf("gateway refund: %w", err)}
 		}
 	}
 
@@ -479,3 +486,42 @@ func (e *RefundError) Unwrap() error { return e.Err }
 
 // ErrorCode 返回业务错误码。
 func (e *RefundError) ErrorCode() string { return e.Code }
+
+// refundErrCode 根据网关错误类型返回合适的错误码。
+// 超时/网络错误 → P0005（可重试），其他 → P0004（业务失败）。
+func refundErrCode(err error) string {
+	if isTimeoutErr(err) {
+		return errcode.CodeRefundGatewayErr
+	}
+	return errcode.CodeRefundFailed
+}
+
+// isTimeoutErr 判断是否为超时或网络不可达错误。
+func isTimeoutErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) { //nolint:errorsastype // stdlib errors.As pattern
+		if urlErr.Timeout() {
+			return true
+		}
+		if urlErr.Err != nil {
+			return isTimeoutErr(urlErr.Err)
+		}
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) {
+		return true
+	}
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+	return false
+}

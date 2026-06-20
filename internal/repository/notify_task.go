@@ -73,11 +73,14 @@ func (r *notifyTaskRepo) FindPendingTasks(ctx context.Context, limit int, lastID
 }
 
 // UpdateTaskStatus 更新任务状态和重试次数。
-// 原子更新，避免并发重复发送。
+//
+// 乐观锁保护：只允许从 pending(0) 或 retry(2) 状态更新，
+// 防止并发 goroutine 覆盖已完成任务的状态。
+// RowsAffected==0 表示任务已被其他 goroutine 处理（并发安全）。
 func (r *notifyTaskRepo) UpdateTaskStatus(ctx context.Context, taskID uint64, status int8, retryCount int) error {
 	result := r.db.WithContext(ctx).
 		Model(&model.NotifyTask{}).
-		Where("id = ?", taskID).
+		Where("id = ? AND status IN ?", taskID, []int8{model.NotifyStatusInit, model.NotifyStatusRetry}).
 		Updates(map[string]any{
 			"status":      status,
 			"retry_count": retryCount,

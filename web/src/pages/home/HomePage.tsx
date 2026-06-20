@@ -14,19 +14,14 @@ import { Card } from '../../components/ui/Card';
 import { Badge } from '../../components/ui/Badge';
 import { Modal } from '../../components/ui/Modal';
 import { PriceDisplay } from '../../components/ui/PriceDisplay';
-import { StatusBadge } from '../../components/ui/StatusBadge';
 import { Loading } from '../../components/ui/Loading';
 import { ErrorState } from '../../components/ui/ErrorState';
+import { TeamList } from '../../components/home/TeamList';
+import { DEFAULT_SOURCE, DEFAULT_CHANNEL, DEFAULT_GOODS_ID, POLL_INTERVAL, PAYMENT_TTL } from '../../utils/constants';
 import { getErrorMessage } from '../../utils/constants';
 import { formatCountdown, generateOutTradeNo } from '../../utils/format';
-import type { TrialResult, LockResult, Team } from '../../api/types';
+import type { TrialResult, LockResult } from '../../api/types';
 
-// Default params for demo — must match existing data in DB
-const DEFAULT_SOURCE = 'APP';
-const DEFAULT_CHANNEL = 'WECHAT';
-const DEFAULT_GOODS_ID = 'G_ZJ';
-const POLL_INTERVAL = 3000; // 3s
-const PAYMENT_TTL = 5 * 60; // 5 min, matches activities.valid_minutes
 
 export function HomePage() {
   const { userId, isLoggedIn } = useAuth();
@@ -43,11 +38,9 @@ export function HomePage() {
   const [countdown, setCountdown] = useState('');
   const [joiningTeamId, setJoiningTeamId] = useState<string | null>(null);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
-  const [, setTick] = useState(0); // force re-render for real-time countdowns
   const paymentEndRef = useRef(0);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const countdownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const tickTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Reusable trial trigger
   const doTrial = useCallback(() => {
@@ -126,17 +119,6 @@ export function HomePage() {
       }
     };
   }, [showPayment]);
-
-  // Tick timer — force re-render every second for real-time countdowns on team cards
-  useEffect(() => {
-    tickTimerRef.current = setInterval(() => setTick((t) => t + 1), 1000);
-    return () => {
-      if (tickTimerRef.current) {
-        clearInterval(tickTimerRef.current);
-        tickTimerRef.current = null;
-      }
-    };
-  }, []);
 
   // Poll payment status when modal is open
   const lockResultRef = useRef(lockResult);
@@ -304,99 +286,15 @@ export function HomePage() {
       </section>
 
       {/* Team list */}
-      <section>
-        <h2 className="text-base font-medium text-[var(--color-text-primary)] mb-4">
-          进行中的拼团
-        </h2>
-        {teamsLoading ? (
-          <div className="flex flex-col gap-3">
-            {Array.from({ length: 3 }).map((_, i) => (
-              <Card key={i} padding="md" className="flex items-center gap-4">
-                <div className="w-12 h-12 rounded-full bg-[var(--color-canvas)] animate-pulse flex-shrink-0" />
-                <div className="flex-1 space-y-2">
-                  <div className="h-4 bg-[var(--color-canvas)] rounded animate-pulse w-24" />
-                  <div className="h-3 bg-[var(--color-canvas)] rounded animate-pulse w-40" />
-                </div>
-                <div className="h-8 w-16 bg-[var(--color-canvas)] rounded animate-pulse flex-shrink-0" />
-              </Card>
-            ))}
-          </div>
-        ) : teams.length === 0 ? (
-          <Card padding="sm" className="text-center py-12">
-            <p className="text-sm text-[var(--color-text-muted)]">
-              来做第一个开团的人
-            </p>
-          </Card>
-        ) : (
-          <div className="flex flex-col gap-3">
-            {teams.map((team: Team) => {
-              const remainingSeconds = Math.max(
-                0,
-                Math.floor((new Date(team.valid_end).getTime() - Date.now()) / 1000),
-              );
-              const progress = team.target_count > 0
-                ? Math.round((team.lock_count / team.target_count) * 100)
-                : 0;
-              const isJoining = joiningTeamId === team.team_id && lockMutation.isPending;
-              const isMyTeam = myTeamIds.has(team.team_id);
-
-              return (
-                <Card key={team.team_id} padding="md" className="flex items-center gap-4">
-                  {/* Progress ring */}
-                  <div className="relative w-12 h-12 flex-shrink-0">
-                    <svg className="w-12 h-12 -rotate-90" viewBox="0 0 36 36">
-                      <circle
-                        cx="18" cy="18" r="15"
-                        fill="none"
-                        stroke="#EAEAEA"
-                        strokeWidth="3"
-                      />
-                      <circle
-                        cx="18" cy="18" r="15"
-                        fill="none"
-                        stroke="var(--color-accent)"
-                        strokeWidth="3"
-                        strokeDasharray={`${progress * 0.94} 94`}
-                        strokeLinecap="round"
-                      />
-                    </svg>
-                    <span className="absolute inset-0 flex items-center justify-center text-xs font-mono font-medium text-[var(--color-text-primary)]">
-                      {team.lock_count}/{team.target_count}
-                    </span>
-                  </div>
-
-                  {/* Info */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-0.5">
-                      <span className="text-sm font-medium text-[var(--color-text-primary)] truncate font-mono">
-                        {team.team_id}
-                      </span>
-                      <StatusBadge type="team" status={team.status} />
-                      {isMyTeam && <Badge variant="info">已加入</Badge>}
-                    </div>
-                    <div className="flex items-center gap-3 text-xs text-[var(--color-text-muted)]">
-                      <span>{team.lock_count}人已参与</span>
-                      <span>剩余 {formatCountdown(remainingSeconds)}</span>
-                    </div>
-                  </div>
-
-                  {/* Join button */}
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    className="flex-shrink-0"
-                    onClick={() => doLock(team.team_id)}
-                    loading={isJoining}
-                    disabled={!trialResult.is_enable || team.lock_count >= team.target_count}
-                  >
-                    {team.lock_count >= team.target_count ? '已满' : '加入'}
-                  </Button>
-                </Card>
-              );
-            })}
-          </div>
-        )}
-      </section>
+      <TeamList
+        teams={teams}
+        teamsLoading={teamsLoading}
+        isEnabled={trialResult.is_enable}
+        joiningTeamId={joiningTeamId}
+        isLockPending={lockMutation.isPending}
+        myTeamIds={myTeamIds}
+        onJoin={(teamId) => doLock(teamId)}
+      />
 
       {/* Payment Modal */}
       <Modal

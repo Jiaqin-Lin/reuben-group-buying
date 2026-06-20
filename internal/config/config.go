@@ -139,7 +139,7 @@ func setDefaults(v *viper.Viper) {
 
 	v.SetDefault("app.name", "group-buy")
 	v.SetDefault("app.lock_result_ttl", 600)
-	v.SetDefault("app.order_lock_ttl", 3)
+	v.SetDefault("app.order_lock_ttl", 15)
 	v.SetDefault("app.notify_max_retry", 5)
 	v.SetDefault("app.timeout_scan_interval", 30)
 	v.SetDefault("app.admin_token", "admin-dev-token")

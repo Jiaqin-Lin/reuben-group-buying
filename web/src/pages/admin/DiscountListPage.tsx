@@ -11,6 +11,7 @@ import { Loading } from '../../components/ui/Loading';
 import { ErrorState } from '../../components/ui/ErrorState';
 import { useToast } from '../../context/ToastContext';
 import { getErrorMessage, PlanTypeLabel } from '../../utils/constants';
+import { required, expressionFormat, validateForm, type FieldErrors } from '../../utils/validate';
 import type { Discount } from '../../api/types';
 
 const PLAN_OPTS = [
@@ -28,6 +29,7 @@ export function DiscountListPage() {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Discount | null>(null);
   const [form, setForm] = useState(emptyForm);
+  const [errors, setErrors] = useState<FieldErrors>({});
 
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['admin', 'discounts'],
@@ -52,14 +54,23 @@ export function DiscountListPage() {
     onError: (e: Error) => addToast(getErrorMessage((e as { code?: string }).code || ''), 'error'),
   });
 
-  const openCreate = () => { setEditing(null); setForm(emptyForm); setShowForm(true); };
+  const openCreate = () => { setEditing(null); setForm(emptyForm); setErrors({}); setShowForm(true); };
   const openEdit = (d: Discount) => {
     setEditing(d);
     setForm({ discount_id: d.discount_id, name: d.name, description: d.description, plan_type: d.plan_type, expression: d.expression, discount_type: d.discount_type, tag_id: d.tag_id || '' });
+    setErrors({});
     setShowForm(true);
   };
 
   const handleSave = () => {
+    const errs = validateForm([
+      { field: 'discount_id', check: () => editing ? null : required(form.discount_id, '折扣ID') },
+      { field: 'name', check: () => required(form.name, '名称') },
+      { field: 'expression', check: () => required(form.expression, '表达式') || expressionFormat(form.expression, form.plan_type) },
+      { field: 'tag_id', check: () => form.discount_type === 1 ? required(form.tag_id, '人群标签ID') : null },
+    ]);
+    if (Object.keys(errs).length > 0) { setErrors(errs); return; }
+
     const payload: Partial<Discount> = { ...form, discount_type: Number(form.discount_type), tag_id: form.tag_id || undefined, plan_type: form.plan_type as Discount['plan_type'] };
     if (editing) updateMut.mutate({ id: editing.discount_id, data: payload });
     else createMut.mutate(payload);
@@ -88,7 +99,9 @@ export function DiscountListPage() {
             </tr>
           </thead>
           <tbody>
-            {data?.map((d) => (
+            {(!data || data.length === 0) ? (
+						<tr><td colSpan={10} className="px-6 py-12 text-center text-[var(--color-text-secondary)]">暂无数据</td></tr>
+					) : (data.map((d) => (
               <tr key={d.discount_id} className="border-b border-[#EAEAEA] last:border-0">
                 <td className="px-4 py-3 text-sm font-mono">{d.discount_id}</td>
                 <td className="px-4 py-3 text-sm">{d.name}</td>
@@ -102,24 +115,24 @@ export function DiscountListPage() {
                   </div>
                 </td>
               </tr>
-            ))}
+            )))}
           </tbody>
         </table>
       </Card>
 
       <Modal open={showForm} onClose={() => setShowForm(false)} title={editing ? '编辑折扣' : '新建折扣'}>
         <div className="flex flex-col gap-4">
-          <Input label="折扣 ID" value={form.discount_id} onChange={e => setForm({ ...form, discount_id: e.target.value })} disabled={!!editing} />
-          <Input label="名称" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />
+          <Input label="折扣 ID" value={form.discount_id} onChange={e => { setForm({ ...form, discount_id: e.target.value }); setErrors(prev => ({ ...prev, discount_id: '' })); }} disabled={!!editing} error={errors.discount_id} />
+          <Input label="名称" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} error={errors.name} />
           <Input label="描述" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} />
-          <Select label="折扣类型" options={PLAN_OPTS} value={form.plan_type} onChange={e => setForm({ ...form, plan_type: e.target.value })} />
-          <Input label="表达式" value={form.expression} onChange={e => setForm({ ...form, expression: e.target.value })} hint="ZJ=20, MJ=100-20, ZK=0.8, N=9.99" />
-          <Select label="分类" options={[{ value: 0, label: '基础折扣' }, { value: 1, label: '人群标签折扣' }]} value={form.discount_type} onChange={e => setForm({ ...form, discount_type: Number(e.target.value) })} />
-          <Input label="人群标签 ID" value={form.tag_id} onChange={e => setForm({ ...form, tag_id: e.target.value })} placeholder="仅人群标签折扣时需要" />
+          <Select label="折扣类型" options={PLAN_OPTS} value={form.plan_type} onChange={e => { setForm({ ...form, plan_type: e.target.value }); setErrors(prev => ({ ...prev, expression: '' })); }} />
+          <Input label="表达式" value={form.expression} onChange={e => { setForm({ ...form, expression: e.target.value }); setErrors(prev => ({ ...prev, expression: '' })); }} hint="ZJ=20, MJ=100-20, ZK=0.8, N=9.99" error={errors.expression} />
+          <Select label="分类" options={[{ value: 0, label: '基础折扣' }, { value: 1, label: '人群标签折扣' }]} value={form.discount_type} onChange={e => { setForm({ ...form, discount_type: Number(e.target.value) }); setErrors(prev => ({ ...prev, tag_id: '' })); }} />
+          <Input label="人群标签 ID" value={form.tag_id} onChange={e => { setForm({ ...form, tag_id: e.target.value }); setErrors(prev => ({ ...prev, tag_id: '' })); }} placeholder="仅人群标签折扣时需要" error={errors.tag_id} />
         </div>
         <div className="flex justify-end gap-3 mt-6">
           <Button variant="secondary" onClick={() => setShowForm(false)}>取消</Button>
-          <Button onClick={handleSave} loading={createMut.isPending || updateMut.isPending}>{editing ? '保存' : '创建'}</Button>
+          <Button onClick={handleSave} loading={createMut.isPending || updateMut.isPending} disabled={Object.keys(errors).length > 0}>{editing ? '保存' : '创建'}</Button>
         </div>
       </Modal>
     </div>

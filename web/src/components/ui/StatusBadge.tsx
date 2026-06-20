@@ -15,7 +15,7 @@ const STATUS_MAP: Record<string, Record<number, StatusConfig>> = {
     0: { variant: 'warning', label: '成团中' },
     1: { variant: 'success', label: '已成团' },
     2: { variant: 'error', label: '已失败' },
-    3: { variant: 'info', label: '部分退款' },
+    3: { variant: 'info', label: '已成团(含退款)' },
   },
   payment: {
     0: { variant: 'warning', label: '待支付' },

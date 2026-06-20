@@ -66,27 +66,15 @@ type OrderRepository interface {
 
 	// --- 状态更新 ---
 
-	// UpdateOrderStatus 更新订单状态。
-	// 用于支付回调（0→1）或退单（0/1→2）。
-	UpdateOrderStatus(ctx context.Context, orderID string, status int8) error
-
 	// UpdateOrderStatusWithCheck 条件更新订单状态，带当前状态检查。
 	// SQL: UPDATE orders SET status=? WHERE order_id=? AND status=?
 	// RowsAffected==0 返回错误，用于并发保护和幂等。
 	UpdateOrderStatusWithCheck(ctx context.Context, orderID string, fromStatus, toStatus int8) error
 
-	// UpdateTeamCounters 原子更新团计数器。
-	// lockDelta/compleDelta 为增量值（+1 或 -1），用 gorm.Expr 保证原子操作。
-	UpdateTeamCounters(ctx context.Context, teamID string, lockDelta, completeDelta int) error
-
-	// UpdateTeamStatus 更新团状态。
-	// 成团（0→1）、失败（0→2）、成团含退款（1→3）。
-	UpdateTeamStatus(ctx context.Context, teamID string, status int8) error
-
 	// RefundTeamForming 退单时更新 forming 团的计数器（带状态检查）。
 	// SQL: UPDATE teams SET lock_count=lock_count+?, complete_count=complete_count+?
 	//      WHERE team_id=? AND status=0
-	// 比 UpdateTeamCounters 多了 status=0 条件，防止退单时团已发生变化。
+	// 带 status=0 条件，防止退单时团已发生变化（已完成的团不退计数器）。
 	RefundTeamForming(ctx context.Context, teamID string, lockDelta, completeDelta int) error
 
 	// RefundCompleteTeam 退单时更新已成团的计数器并转换团状态。
@@ -136,7 +124,8 @@ type TimeoutOrder struct {
 
 // 业务错误（哨兵错误，service 层判断用）
 var (
-	ErrTeamFull       = fmt.Errorf("team is full")
+	ErrTeamFull        = fmt.Errorf("team is full")
+	ErrTakeLimitReached = fmt.Errorf("take limit reached")
 	ErrOrderDup       = fmt.Errorf("order duplicate")
 	ErrTeamDup        = fmt.Errorf("team duplicate")
 	ErrTeamNotForming = fmt.Errorf("team is not forming")
@@ -315,52 +304,6 @@ func (r *orderRepo) JoinTeamWithOrder(ctx context.Context, teamID string, order 
 
 // --- 状态更新 ---
 
-func (r *orderRepo) UpdateOrderStatus(ctx context.Context, orderID string, status int8) error {
-	result := r.db.WithContext(ctx).
-		Model(&model.Order{}).
-		Where("order_id = ?", orderID).
-		Update("status", status)
-	if result.Error != nil {
-		return fmt.Errorf("update order status %s: %w", orderID, result.Error)
-	}
-	if result.RowsAffected == 0 {
-		return fmt.Errorf("update order status %s: %w", orderID, gorm.ErrRecordNotFound)
-	}
-	return nil
-}
-
-func (r *orderRepo) UpdateTeamCounters(ctx context.Context, teamID string, lockDelta, completeDelta int) error {
-	// 用 gorm.Expr 生成原子 SQL：UPDATE teams SET lock_count = lock_count + ?, complete_count = complete_count + ? WHERE team_id = ?
-	result := r.db.WithContext(ctx).
-		Model(&model.Team{}).
-		Where("team_id = ?", teamID).
-		Updates(map[string]any{
-			"lock_count":     gorm.Expr("lock_count + ?", lockDelta),
-			"complete_count": gorm.Expr("complete_count + ?", completeDelta),
-		})
-	if result.Error != nil {
-		return fmt.Errorf("update team counters %s: %w", teamID, result.Error)
-	}
-	if result.RowsAffected == 0 {
-		return fmt.Errorf("update team counters %s: %w", teamID, gorm.ErrRecordNotFound)
-	}
-	return nil
-}
-
-func (r *orderRepo) UpdateTeamStatus(ctx context.Context, teamID string, status int8) error {
-	result := r.db.WithContext(ctx).
-		Model(&model.Team{}).
-		Where("team_id = ?", teamID).
-		Update("status", status)
-	if result.Error != nil {
-		return fmt.Errorf("update team status %s: %w", teamID, result.Error)
-	}
-	if result.RowsAffected == 0 {
-		return fmt.Errorf("update team status %s: %w", teamID, gorm.ErrRecordNotFound)
-	}
-	return nil
-}
-
 // UpdateOrderStatusWithCheck 条件更新订单状态，带当前状态检查。
 // RowsAffected==0 表示不存在该状态下的订单（可能已被并发修改）。
 func (r *orderRepo) UpdateOrderStatusWithCheck(ctx context.Context, orderID string, fromStatus, toStatus int8) error {
@@ -497,6 +440,24 @@ func (r *orderRepo) SettleOrder(ctx context.Context, params SettleOrderParams) (
 			return ErrTeamExpired
 		}
 
+		// 3.5 DB 层兜底 take_limit 校验（Redis 软检查为快速拒绝，此处为最终防线）
+		var activity model.Activity
+		if err := tx.Where("activity_id = ?", order.ActivityID).First(&activity).Error; err != nil {
+			return fmt.Errorf("find activity for take_limit check: %w", err)
+		}
+		if activity.TakeLimit > 0 {
+			var activeCount int64
+			if err := tx.Model(&model.Order{}).
+				Where("user_id = ? AND activity_id = ? AND status = ?",
+					order.UserID, order.ActivityID, model.OrderStatusPaid).
+				Count(&activeCount).Error; err != nil {
+				return fmt.Errorf("count active orders for take_limit: %w", err)
+			}
+			if int(activeCount) >= activity.TakeLimit {
+				return ErrTakeLimitReached
+			}
+		}
+
 		// 4. 更新订单状态（条件更新，防重复结算）
 		orderUpdate := tx.Model(&model.Order{}).
 			Where("order_id = ? AND status = ?", order.OrderID, model.OrderStatusLocked).
@@ -575,18 +536,18 @@ func (r *orderRepo) FindTimeoutOrders(ctx context.Context, limit int, lastID uin
 	return orders, nil
 }
 
-// FindTeamsByActivityID 查活动下所有 forming 状态的团，带分页。
+// FindTeamsByActivityID 查活动下所有团（含进行中、已成团、已失败），带分页。
 func (r *orderRepo) FindTeamsByActivityID(ctx context.Context, activityID int64, offset, limit int) ([]model.Team, int64, error) {
 	var total int64
 	if err := r.db.WithContext(ctx).Model(&model.Team{}).
-		Where("activity_id = ? AND status = ?", activityID, model.TeamStatusForming).
+		Where("activity_id = ?", activityID).
 		Count(&total).Error; err != nil {
 		return nil, 0, fmt.Errorf("count teams by activity %d: %w", activityID, err)
 	}
 
 	var teams []model.Team
 	err := r.db.WithContext(ctx).
-		Where("activity_id = ? AND status = ?", activityID, model.TeamStatusForming).
+		Where("activity_id = ?", activityID).
 		Order("id DESC").
 		Offset(offset).
 		Limit(limit).

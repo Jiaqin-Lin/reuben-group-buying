@@ -201,6 +201,7 @@ func New(cfg *config.Config) (*App, error) {
 	gin.SetMode(cfg.Server.Mode)
 	router := gin.New()
 	router.Use(tracing.Middleware())
+	router.Use(bodyLimitMiddleware(1 << 20)) // 1MB request body limit
 	router.Use(charsetMiddleware())
 	router.Use(metricsMiddleware())
 	router.Use(logging.Middleware(logger))
@@ -535,6 +536,15 @@ groupbuy_memory_bytes{type="heap_objects"} %d
 			mem.Sys,
 			mem.HeapObjects,
 		)
+	}
+}
+
+
+// bodyLimitMiddleware 限制请求体大小，防止大 payload 导致 OOM。
+func bodyLimitMiddleware(maxBytes int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBytes)
+		c.Next()
 	}
 }
 

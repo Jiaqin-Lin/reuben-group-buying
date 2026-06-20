@@ -9,6 +9,7 @@ import { Loading } from '../../components/ui/Loading';
 import { ErrorState } from '../../components/ui/ErrorState';
 import { useToast } from '../../context/ToastContext';
 import { getErrorMessage } from '../../utils/constants';
+import { required, validateForm, type FieldErrors } from '../../utils/validate';
 import type { CrowdTag, CrowdTagDetail } from '../../api/types';
 
 const emptyForm = { tag_id: '', tag_name: '', tag_desc: '' };
@@ -19,6 +20,7 @@ export function CrowdTagPage() {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<CrowdTag | null>(null);
   const [form, setForm] = useState(emptyForm);
+  const [errors, setErrors] = useState<FieldErrors>({});
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [newMemberId, setNewMemberId] = useState('');
 
@@ -59,9 +61,14 @@ export function CrowdTagPage() {
     onError: (e: Error) => addToast(getErrorMessage((e as { code?: string }).code || ''), 'error'),
   });
 
-  const openCreate = () => { setEditing(null); setForm(emptyForm); setShowForm(true); };
-  const openEdit = (t: CrowdTag) => { setEditing(t); setForm({ tag_id: t.tag_id, tag_name: t.tag_name, tag_desc: t.tag_desc }); setShowForm(true); };
+  const openCreate = () => { setEditing(null); setForm(emptyForm); setErrors({}); setShowForm(true); };
+  const openEdit = (t: CrowdTag) => { setEditing(t); setForm({ tag_id: t.tag_id, tag_name: t.tag_name, tag_desc: t.tag_desc }); setErrors({}); setShowForm(true); };
   const handleSave = () => {
+    const errs = validateForm([
+      { field: 'tag_id', check: () => editing ? null : required(form.tag_id, '标签ID') },
+      { field: 'tag_name', check: () => required(form.tag_name, '名称') },
+    ]);
+    if (Object.keys(errs).length > 0) { setErrors(errs); return; }
     if (editing) updateMut.mutate({ id: editing.tag_id, data: form });
     else createMut.mutate(form as Partial<CrowdTag>);
   };
@@ -144,13 +151,13 @@ export function CrowdTagPage() {
 
       <Modal open={showForm} onClose={() => setShowForm(false)} title={editing ? '编辑标签' : '新建标签'}>
         <div className="flex flex-col gap-4">
-          <Input label="标签 ID" value={form.tag_id} onChange={e => setForm({ ...form, tag_id: e.target.value })} disabled={!!editing} />
-          <Input label="名称" value={form.tag_name} onChange={e => setForm({ ...form, tag_name: e.target.value })} />
+          <Input label="标签 ID" value={form.tag_id} onChange={e => { setForm({ ...form, tag_id: e.target.value }); setErrors(prev => ({ ...prev, tag_id: '' })); }} disabled={!!editing} error={errors.tag_id} />
+          <Input label="名称" value={form.tag_name} onChange={e => setForm({ ...form, tag_name: e.target.value })} error={errors.tag_name} />
           <Input label="描述" value={form.tag_desc} onChange={e => setForm({ ...form, tag_desc: e.target.value })} />
         </div>
         <div className="flex justify-end gap-3 mt-6">
           <Button variant="secondary" onClick={() => setShowForm(false)}>取消</Button>
-          <Button onClick={handleSave} loading={createMut.isPending || updateMut.isPending}>{editing ? '保存' : '创建'}</Button>
+          <Button onClick={handleSave} loading={createMut.isPending || updateMut.isPending} disabled={Object.keys(errors).length > 0}>{editing ? '保存' : '创建'}</Button>
         </div>
       </Modal>
     </div>

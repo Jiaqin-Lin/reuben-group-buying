@@ -11,6 +11,7 @@ import { Loading } from '../../components/ui/Loading';
 import { ErrorState } from '../../components/ui/ErrorState';
 import { useToast } from '../../context/ToastContext';
 import { getErrorMessage } from '../../utils/constants';
+import { required, isPositiveInt, minValue, dateRange, validateForm, type FieldErrors } from '../../utils/validate';
 import type { Activity } from '../../api/types';
 
 const STATUS_OPTS = [
@@ -41,6 +42,7 @@ export function ActivityListPage() {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Activity | null>(null);
   const [form, setForm] = useState(emptyForm);
+  const [errors, setErrors] = useState<FieldErrors>({});
 
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['admin', 'activities'],
@@ -65,7 +67,7 @@ export function ActivityListPage() {
     onError: (e: Error) => addToast(getErrorMessage((e as { code?: string }).code || ''), 'error'),
   });
 
-  const openCreate = () => { setEditing(null); setForm(emptyForm); setShowForm(true); };
+  const openCreate = () => { setEditing(null); setForm(emptyForm); setErrors({}); setShowForm(true); };
   const openEdit = (a: Activity) => {
     setEditing(a);
     setForm({
@@ -82,10 +84,22 @@ export function ActivityListPage() {
       tag_id: a.tag_id || '',
       tag_scope: a.tag_scope || '',
     });
+    setErrors({});
     setShowForm(true);
   };
 
   const handleSave = () => {
+    const errs = validateForm([
+      { field: 'name', check: () => required(form.name, '名称') },
+      { field: 'discount_id', check: () => required(form.discount_id, '折扣ID') },
+      { field: 'target_count', check: () => isPositiveInt(form.target_count, '目标人数') || minValue(form.target_count, 2, '目标人数') },
+      { field: 'take_limit', check: () => isPositiveInt(form.take_limit, '限购次数') || minValue(form.take_limit, 1, '限购次数') },
+      { field: 'valid_minutes', check: () => isPositiveInt(form.valid_minutes, '有效分钟') || minValue(form.valid_minutes, 1, '有效分钟') },
+      { field: 'start_time', check: () => required(form.start_time, '开始时间') },
+      { field: 'end_time', check: () => required(form.end_time, '结束时间') || dateRange(form.start_time, form.end_time) },
+    ]);
+    if (Object.keys(errs).length > 0) { setErrors(errs); return; }
+
     const payload = { ...form, target_count: Number(form.target_count), take_limit: Number(form.take_limit), valid_minutes: Number(form.valid_minutes), group_type: Number(form.group_type), status: Number(form.status), tag_id: form.tag_id || undefined, tag_scope: form.tag_scope || undefined };
     if (editing) {
       updateMut.mutate({ id: editing.activity_id, data: payload });
@@ -118,7 +132,9 @@ export function ActivityListPage() {
             </tr>
           </thead>
           <tbody>
-            {data?.map((a) => (
+            {(!data || data.length === 0) ? (
+						<tr><td colSpan={10} className="px-6 py-12 text-center text-[var(--color-text-secondary)]">暂无数据</td></tr>
+					) : (data.map((a) => (
               <tr key={a.activity_id} className="border-b border-[#EAEAEA] last:border-0">
                 <td className="px-4 py-3 text-sm font-mono">{a.activity_id}</td>
                 <td className="px-4 py-3 text-sm">{a.name}</td>
@@ -133,7 +149,7 @@ export function ActivityListPage() {
                   </div>
                 </td>
               </tr>
-            ))}
+            )))}
           </tbody>
         </table>
       </Card>
@@ -141,21 +157,21 @@ export function ActivityListPage() {
       <Modal open={showForm} onClose={() => setShowForm(false)} title={editing ? '编辑活动' : '新建活动'} maxWidth="lg">
         <div className="grid grid-cols-2 gap-4">
           <Input label="活动 ID" type="number" value={String(form.activity_id)} onChange={e => setForm({ ...form, activity_id: Number(e.target.value) })} disabled={!!editing} />
-          <Input label="名称" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />
-          <Input label="折扣 ID" value={form.discount_id} onChange={e => setForm({ ...form, discount_id: e.target.value })} />
+          <Input label="名称" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} error={errors.name} />
+          <Input label="折扣 ID" value={form.discount_id} onChange={e => { setForm({ ...form, discount_id: e.target.value }); setErrors(prev => ({ ...prev, discount_id: '' })); }} error={errors.discount_id} />
           <Select label="拼团类型" options={[{ value: 0, label: '自动' }, { value: 1, label: '目标' }]} value={form.group_type} onChange={e => setForm({ ...form, group_type: Number(e.target.value) })} />
-          <Input label="目标人数" type="number" value={String(form.target_count)} onChange={e => setForm({ ...form, target_count: Number(e.target.value) })} />
-          <Input label="限购次数" type="number" value={String(form.take_limit)} onChange={e => setForm({ ...form, take_limit: Number(e.target.value) })} />
-          <Input label="有效分钟" type="number" value={String(form.valid_minutes)} onChange={e => setForm({ ...form, valid_minutes: Number(e.target.value) })} />
+          <Input label="目标人数" type="number" value={String(form.target_count)} onChange={e => { setForm({ ...form, target_count: Number(e.target.value) }); setErrors(prev => ({ ...prev, target_count: '' })); }} error={errors.target_count} />
+          <Input label="限购次数" type="number" value={String(form.take_limit)} onChange={e => { setForm({ ...form, take_limit: Number(e.target.value) }); setErrors(prev => ({ ...prev, take_limit: '' })); }} error={errors.take_limit} />
+          <Input label="有效分钟" type="number" value={String(form.valid_minutes)} onChange={e => { setForm({ ...form, valid_minutes: Number(e.target.value) }); setErrors(prev => ({ ...prev, valid_minutes: '' })); }} error={errors.valid_minutes} />
           <Select label="状态" options={STATUS_OPTS} value={form.status} onChange={e => setForm({ ...form, status: Number(e.target.value) })} />
-          <Input label="开始时间" type="datetime-local" value={form.start_time} onChange={e => setForm({ ...form, start_time: e.target.value })} />
-          <Input label="结束时间" type="datetime-local" value={form.end_time} onChange={e => setForm({ ...form, end_time: e.target.value })} />
+          <Input label="开始时间" type="datetime-local" value={form.start_time} onChange={e => { setForm({ ...form, start_time: e.target.value }); setErrors(prev => ({ ...prev, start_time: '', end_time: '' })); }} error={errors.start_time} />
+          <Input label="结束时间" type="datetime-local" value={form.end_time} onChange={e => { setForm({ ...form, end_time: e.target.value }); setErrors(prev => ({ ...prev, end_time: '' })); }} error={errors.end_time} />
           <Input label="人群标签 ID" value={form.tag_id} onChange={e => setForm({ ...form, tag_id: e.target.value })} placeholder="可选" />
           <Input label="标签范围" value={form.tag_scope} onChange={e => setForm({ ...form, tag_scope: e.target.value })} placeholder="可选" />
         </div>
         <div className="flex justify-end gap-3 mt-6">
           <Button variant="secondary" onClick={() => setShowForm(false)}>取消</Button>
-          <Button onClick={handleSave} loading={createMut.isPending || updateMut.isPending}>
+          <Button onClick={handleSave} loading={createMut.isPending || updateMut.isPending} disabled={Object.keys(errors).length > 0}>
             {editing ? '保存' : '创建'}
           </Button>
         </div>

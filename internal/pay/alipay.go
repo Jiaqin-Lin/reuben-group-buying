@@ -5,9 +5,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/smartwalle/alipay/v3"
 
@@ -56,7 +58,9 @@ func NewAlipay(cfg AlipayConfig) (*AlipayGateway, error) {
 	}
 
 	// 创建客户端：第三个参数 isProduction=false → 沙箱
-	client, err := alipay.New(cfg.AppID, privateKey, !cfg.Sandbox)
+	// 设置 8s 超时，避免支付宝 API 慢响应卡死锁单流程（锁 TTL 只有 3s，但至少不会无限等）
+	httpClient := &http.Client{Timeout: 8 * time.Second}
+	client, err := alipay.New(cfg.AppID, privateKey, !cfg.Sandbox, alipay.WithHTTPClient(httpClient))
 	if err != nil {
 		return nil, fmt.Errorf("alipay new client: %w", err)
 	}

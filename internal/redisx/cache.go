@@ -57,11 +57,19 @@ func TakeLimitCheckAndIncr(ctx context.Context, rdb *goredis.Client, activityID 
 //
 // 用于结算时：已通过 take_limit 检查后，直接 INCR。
 // 返回递增后的值。
-func IncrTakeCount(ctx context.Context, rdb *goredis.Client, activityID int64, userID string) (int64, error) {
+func IncrTakeCount(ctx context.Context, rdb *goredis.Client, activityID int64, userID string, ttl time.Duration) (int64, error) {
 	key := TakeLimitKey(activityID, userID)
 	count, err := rdb.Incr(ctx, key).Result()
 	if err != nil {
 		return 0, fmt.Errorf("incr take count: %w", err)
+	}
+	// INCR 在 key 不存在时新建（TTL=-1），需手动设置过期时间
+	if ttl > 0 {
+		ttlSec := max(int64(ttl.Seconds()), 1)
+		if expErr := rdb.Expire(ctx, key, time.Duration(ttlSec)*time.Second).Err(); expErr != nil {
+			// Expire 失败仅打日志，不影响主流程（key 无 TTL 最坏是内存泄漏，DB 会兜底 take_limit）
+			_ = expErr
+		}
 	}
 	return count, nil
 }

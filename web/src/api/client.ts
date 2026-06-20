@@ -60,15 +60,16 @@ async function request<T>(
 
   const envelope: ApiEnvelope<T> = await res.json();
 
+  // 优先检查业务错误码（后端 HTTP 4xx/5xx 也可能携带业务 code+info）
+  if (envelope.code && envelope.code !== '0000') {
+    throw new ApiError(envelope.code, envelope.info);
+  }
+
   if (!res.ok) {
     throw new ApiError(
       'HTTP_ERROR',
       `HTTP ${res.status}: ${res.statusText}`,
     );
-  }
-
-  if (envelope.code !== '0000') {
-    throw new ApiError(envelope.code, envelope.info);
   }
 
   return envelope.data as T;

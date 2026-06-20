@@ -13,14 +13,13 @@ import { Badge } from '../../components/ui/Badge';
 import { Modal } from '../../components/ui/Modal';
 import { PriceDisplay } from '../../components/ui/PriceDisplay';
 import { StatusBadge } from '../../components/ui/StatusBadge';
+import { POLL_INTERVAL, PAYMENT_TTL } from '../../utils/constants';
 import { ErrorState } from '../../components/ui/ErrorState';
 import { PageLoading } from '../../components/ui/Loading';
 import { formatCountdown, formatTime } from '../../utils/format';
 import { getErrorMessage } from '../../utils/constants';
 import type { Payment } from '../../api/types';
 
-const POLL_INTERVAL = 3000;
-const PAYMENT_TTL = 5 * 60; // 5 min, matches activities.valid_minutes
 
 export function OrderPage() {
   const { outTradeNo } = useParams<{ outTradeNo: string }>();
