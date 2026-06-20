@@ -108,8 +108,16 @@ func (s *RefundService) Refund(ctx context.Context, req RefundRequest) (*RefundR
 	case order.Status == model.OrderStatusLocked && team.Status == model.TeamStatusForming:
 		return s.unpaidRefund(ctx, order)
 
+	case order.Status == model.OrderStatusLocked && team.Status == model.TeamStatusFailed:
+		// 团已失败（如超时），订单仍锁定 → 取消订单释放名额
+		return s.unpaidRefundFailedTeam(ctx, order)
+
 	case order.Status == model.OrderStatusPaid && team.Status == model.TeamStatusForming:
 		return s.paidRefund(ctx, order)
+
+	case order.Status == model.OrderStatusPaid && team.Status == model.TeamStatusFailed:
+		// 团已失败但订单已支付 → 退款（需调支付网关），不更新团计数器
+		return s.paidRefundFailedTeam(ctx, order)
 
 	case order.Status == model.OrderStatusPaid &&
 		(team.Status == model.TeamStatusComplete || team.Status == model.TeamStatusCompleteRefunded):
@@ -185,7 +193,7 @@ func (s *RefundService) paidRefund(ctx context.Context, order *model.Order) (*Re
 	if s.payGateway != nil {
 		if _, err := s.payGateway.Refund(ctx, order.OrderID, order.PayPrice); err != nil {
 			slog.ErrorContext(ctx, "refund paid: gateway refund failed", "order_id", order.OrderID, "error", err)
-			return nil, fmt.Errorf("refund paid: gateway refund: %w", err)
+			return nil, &RefundError{Code: errcode.CodeRefundFailed, Err: fmt.Errorf("gateway refund: %w", err)}
 		}
 	}
 
@@ -237,7 +245,7 @@ func (s *RefundService) paidTeamRefund(ctx context.Context, order *model.Order) 
 	if s.payGateway != nil {
 		if _, err := s.payGateway.Refund(ctx, order.OrderID, order.PayPrice); err != nil {
 			slog.ErrorContext(ctx, "refund paid team: gateway refund failed", "order_id", order.OrderID, "error", err)
-			return nil, fmt.Errorf("refund paid team: gateway refund: %w", err)
+			return nil, &RefundError{Code: errcode.CodeRefundFailed, Err: fmt.Errorf("gateway refund: %w", err)}
 		}
 	}
 
@@ -270,6 +278,91 @@ func (s *RefundService) paidTeamRefund(ctx context.Context, order *model.Order) 
 		ActivityID: order.ActivityID,
 		RefundType: "paid_team",
 		TeamStatus: newTeamStatus,
+	}, nil
+}
+
+// unpaidRefundFailedTeam 团已失败时的未支付退单（order=Locked, team=Failed）。
+//
+// 场景：超时扫描已将团标记为 Failed，但订单仍处于 Locked 状态。
+// 操作：
+//   - 订单 Locked → Refunded
+//   - 团计数器不再更新（团已失败）
+//   - 关闭待支付 payment
+//   - 释放 Redis 名额
+func (s *RefundService) unpaidRefundFailedTeam(ctx context.Context, order *model.Order) (*RefundResult, error) {
+	slog.DebugContext(ctx, "refund: unpaid failed team", "order_id", order.OrderID, "team_id", order.TeamID)
+
+	// 1. 更新订单状态
+	if err := s.orderRepo.UpdateOrderStatusWithCheck(ctx, order.OrderID, model.OrderStatusLocked, model.OrderStatusRefunded); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return s.handleConcurrentRefund(ctx, order)
+		}
+		return nil, fmt.Errorf("refund unpaid failed team: update order: %w", err)
+	}
+
+	// 2. 关闭待支付 payment
+	s.closePayment(ctx, order.OrderID)
+
+	// 3. 创建 notify_task
+	s.createRefundNotifyTask(ctx, order, model.NotifyCategoryUnpaidRefund)
+
+	// 4. 释放 Redis 名额
+	s.releaseStock(ctx, order.ActivityID, order.TeamID, order.OutTradeNo)
+
+	slog.InfoContext(ctx, "refund unpaid failed team done", "order_id", order.OrderID, "team_id", order.TeamID)
+
+	return &RefundResult{
+		OrderID:    order.OrderID,
+		OutTradeNo: order.OutTradeNo,
+		TeamID:     order.TeamID,
+		ActivityID: order.ActivityID,
+		RefundType: "unpaid",
+		TeamStatus: model.TeamStatusFailed,
+	}, nil
+}
+
+// paidRefundFailedTeam 团已失败时的已支付退单（order=Paid, team=Failed）。
+//
+// 场景：团已失败（如超时），订单已支付但尚未被处理。
+// 操作：
+//   - 调用支付网关退款
+//   - 订单 Paid → Refunded
+//   - 团计数器不再更新（团已失败）
+//   - 释放 Redis 名额
+func (s *RefundService) paidRefundFailedTeam(ctx context.Context, order *model.Order) (*RefundResult, error) {
+	slog.DebugContext(ctx, "refund: paid failed team", "order_id", order.OrderID, "team_id", order.TeamID)
+
+	// 0. 调用支付网关退款
+	if s.payGateway != nil {
+		if _, err := s.payGateway.Refund(ctx, order.OrderID, order.PayPrice); err != nil {
+			slog.ErrorContext(ctx, "refund paid failed team: gateway refund failed", "order_id", order.OrderID, "error", err)
+			return nil, &RefundError{Code: errcode.CodeRefundFailed, Err: fmt.Errorf("gateway refund: %w", err)}
+		}
+	}
+
+	// 1. 更新订单状态
+	if err := s.orderRepo.UpdateOrderStatusWithCheck(ctx, order.OrderID, model.OrderStatusPaid, model.OrderStatusRefunded); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return s.handleConcurrentRefund(ctx, order)
+		}
+		return nil, fmt.Errorf("refund paid failed team: update order: %w", err)
+	}
+
+	// 2. 创建 notify_task
+	s.createRefundNotifyTask(ctx, order, model.NotifyCategoryPaidRefund)
+
+	// 3. 释放 Redis 名额（团已失败，名额应该还回来）
+	s.releaseStock(ctx, order.ActivityID, order.TeamID, order.OutTradeNo)
+
+	slog.InfoContext(ctx, "refund paid failed team done", "order_id", order.OrderID, "team_id", order.TeamID)
+
+	return &RefundResult{
+		OrderID:    order.OrderID,
+		OutTradeNo: order.OutTradeNo,
+		TeamID:     order.TeamID,
+		ActivityID: order.ActivityID,
+		RefundType: "paid",
+		TeamStatus: model.TeamStatusFailed,
 	}, nil
 }
 

@@ -1,5 +1,6 @@
 # Binaries
 /bin/
+/server
 *.exe
 *.exe~
 *.dll
@@ -40,6 +41,12 @@ data/
 
 # Java reference code (read-only, not part of Go project)
 group-shopping/
+
+# Node (frontend)
+node_modules/
+
+# Skills lock
+skills-lock.json
 
 # Load test artifacts
 loadtest/results/

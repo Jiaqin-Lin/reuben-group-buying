@@ -30,9 +30,17 @@ type OrderRepository interface {
 	// 用于 take_limit 校验：统计用户在该活动下已支付次数。
 	FindOrdersByUserAndActivity(ctx context.Context, userID string, activityID int64) ([]model.Order, error)
 
+	// ExistsOrderByUserAndTeam 检查用户是否已在指定团有有效订单（锁定/已支付）。
+	// 已退款订单不计入，允许退款后重新加入同一个团。
+	ExistsOrderByUserAndTeam(ctx context.Context, userID, teamID string) (bool, error)
+
 	// CountPaidOrdersByUserActivity 统计用户在活动下已支付的订单数。
 	// 比 FindOrdersByUserAndActivity 更轻量，只返回计数。
 	CountPaidOrdersByUserActivity(ctx context.Context, userID string, activityID int64) (int64, error)
+
+	// CountActiveOrdersByUserActivity 统计用户在活动下有效订单数（锁定+已支付）。
+	// 用于锁单时软检查 take_limit，防止只锁不付绕过限购。
+	CountActiveOrdersByUserActivity(ctx context.Context, userID string, activityID int64) (int64, error)
 
 	// --- 团队查询 ---
 
@@ -99,6 +107,10 @@ type OrderRepository interface {
 	// JOIN orders + teams：orders.status=0（锁定中）且 teams.valid_end < NOW()。
 	// 定时任务游标分页扫描，每次限量处理。
 	FindTimeoutOrders(ctx context.Context, limit int, lastID uint64) ([]TimeoutOrder, error)
+
+	// FindTeamsByActivityID 查活动下所有 forming 状态的团。
+	// 用于用户端首页团列表展示。
+	FindTeamsByActivityID(ctx context.Context, activityID int64, offset, limit int) ([]model.Team, int64, error)
 
 	// FindOrdersByTeamID 查团下所有订单。
 	// 用于成团后构建回调 payload。
@@ -192,6 +204,21 @@ func (r *orderRepo) FindOrdersByUserAndActivity(ctx context.Context, userID stri
 	return orders, nil
 }
 
+// ExistsOrderByUserAndTeam 检查用户是否已在指定团有有效订单（锁定/已支付，不含已退款）。
+// 已退款订单不计入，允许退款后重新加入同一个团。
+func (r *orderRepo) ExistsOrderByUserAndTeam(ctx context.Context, userID, teamID string) (bool, error) {
+	var count int64
+	err := r.db.WithContext(ctx).
+		Model(&model.Order{}).
+		Where("user_id = ? AND team_id = ? AND status IN ?",
+			userID, teamID, []int8{model.OrderStatusLocked, model.OrderStatusPaid}).
+		Count(&count).Error
+	if err != nil {
+		return false, fmt.Errorf("check order exists user %s team %s: %w", userID, teamID, err)
+	}
+	return count > 0, nil
+}
+
 func (r *orderRepo) CountPaidOrdersByUserActivity(ctx context.Context, userID string, activityID int64) (int64, error) {
 	var count int64
 	err := r.db.WithContext(ctx).
@@ -201,6 +228,19 @@ func (r *orderRepo) CountPaidOrdersByUserActivity(ctx context.Context, userID st
 		Count(&count).Error
 	if err != nil {
 		return 0, fmt.Errorf("count paid orders user %s activity %d: %w", userID, activityID, err)
+	}
+	return count, nil
+}
+
+func (r *orderRepo) CountActiveOrdersByUserActivity(ctx context.Context, userID string, activityID int64) (int64, error) {
+	var count int64
+	err := r.db.WithContext(ctx).
+		Model(&model.Order{}).
+		Where("user_id = ? AND activity_id = ? AND status IN ?",
+			userID, activityID, []int8{model.OrderStatusLocked, model.OrderStatusPaid}).
+		Count(&count).Error
+	if err != nil {
+		return 0, fmt.Errorf("count active orders user %s activity %d: %w", userID, activityID, err)
 	}
 	return count, nil
 }
@@ -515,7 +555,9 @@ func (r *orderRepo) SettleOrder(ctx context.Context, params SettleOrderParams) (
 
 func (r *orderRepo) FindTimeoutOrders(ctx context.Context, limit int, lastID uint64) ([]TimeoutOrder, error) {
 	// 游标分页：用 orders.id > lastID 代替 OFFSET，避免大偏移量性能问题。
-	// 联表找 orders.status=0 且 teams.valid_end < NOW() 的订单。
+	// 两种超时条件（满足其一即退单）：
+	//   1. 订单支付超时：orders.created_at + 5 分钟 < NOW()（锁单不付钱 5 分钟退单）
+	//   2. 拼团过期：teams.valid_end < NOW()（团超过拼团有效期解散）
 	var orders []TimeoutOrder
 	err := r.db.WithContext(ctx).
 		Table("orders").
@@ -523,7 +565,7 @@ func (r *orderRepo) FindTimeoutOrders(ctx context.Context, limit int, lastID uin
 		Joins("JOIN teams ON teams.team_id = orders.team_id").
 		Where("orders.status = ?", model.OrderStatusLocked).
 		Where("orders.id > ?", lastID).
-		Where("teams.valid_end < NOW()").
+		Where("(orders.created_at + INTERVAL 5 MINUTE < NOW() OR teams.valid_end < NOW())").
 		Order("orders.id ASC").
 		Limit(limit).
 		Find(&orders).Error
@@ -531,6 +573,28 @@ func (r *orderRepo) FindTimeoutOrders(ctx context.Context, limit int, lastID uin
 		return nil, fmt.Errorf("find timeout orders: %w", err)
 	}
 	return orders, nil
+}
+
+// FindTeamsByActivityID 查活动下所有 forming 状态的团，带分页。
+func (r *orderRepo) FindTeamsByActivityID(ctx context.Context, activityID int64, offset, limit int) ([]model.Team, int64, error) {
+	var total int64
+	if err := r.db.WithContext(ctx).Model(&model.Team{}).
+		Where("activity_id = ? AND status = ?", activityID, model.TeamStatusForming).
+		Count(&total).Error; err != nil {
+		return nil, 0, fmt.Errorf("count teams by activity %d: %w", activityID, err)
+	}
+
+	var teams []model.Team
+	err := r.db.WithContext(ctx).
+		Where("activity_id = ? AND status = ?", activityID, model.TeamStatusForming).
+		Order("id DESC").
+		Offset(offset).
+		Limit(limit).
+		Find(&teams).Error
+	if err != nil {
+		return nil, 0, fmt.Errorf("find teams by activity %d: %w", activityID, err)
+	}
+	return teams, total, nil
 }
 
 // FindOrdersByTeamID 查团下所有订单。

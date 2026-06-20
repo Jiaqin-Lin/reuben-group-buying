@@ -11,7 +11,7 @@ type Activity struct {
 	GroupType    int8      `gorm:"type:tinyint;not null;default:0;column:group_type" json:"group_type"`
 	TargetCount  int       `gorm:"type:int;not null;default:1;column:target_count" json:"target_count"`
 	TakeLimit    int       `gorm:"type:int;not null;default:1;column:take_limit" json:"take_limit"`
-	ValidMinutes int       `gorm:"type:int;not null;default:15;column:valid_minutes" json:"valid_minutes"`
+	ValidMinutes int       `gorm:"type:int;not null;default:5;column:valid_minutes" json:"valid_minutes"`
 	Status       int8      `gorm:"type:tinyint;not null;default:0" json:"status"`
 	StartTime    time.Time `gorm:"type:datetime;not null;column:start_time" json:"start_time"`
 	EndTime      time.Time `gorm:"type:datetime;not null;column:end_time" json:"end_time"`

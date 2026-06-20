@@ -157,19 +157,20 @@ func (s *LockService) Lock(ctx context.Context, req LockRequest) (*LockResult, e
 		return nil, &LockError{Code: errcode.CodeCrowdBlocked, Err: fmt.Errorf("user not in required crowd for activity %d", req.ActivityID)}
 	}
 
-	// 5. 限购检查（只查已支付订单数，不计锁定的）
+	// 5. 限购检查（统计锁定+已支付订单数，防止锁了不付绕过限购）
+	//    注意：超时退单（status=2）不计入，释放名额后可重新参团。
 	activity, err := s.getActivity(ctx, req.ActivityID)
 	if err != nil {
 		return nil, fmt.Errorf("lock: find activity: %w", err)
 	}
-	paidCount, err := s.orderRepo.CountPaidOrdersByUserActivity(ctx, req.UserID, req.ActivityID)
+	activeCount, err := s.orderRepo.CountActiveOrdersByUserActivity(ctx, req.UserID, req.ActivityID)
 	if err != nil {
 		return nil, fmt.Errorf("lock: check take_limit: %w", err)
 	}
-	if activity.TakeLimit > 0 && int(paidCount) >= activity.TakeLimit {
+	if activity.TakeLimit > 0 && int(activeCount) >= activity.TakeLimit {
 		return nil, &LockError{
 			Code: errcode.CodeTakeLimitReached,
-			Err:  fmt.Errorf("take limit reached: %d/%d", paidCount, activity.TakeLimit),
+			Err:  fmt.Errorf("take limit reached: %d/%d (locked+paid)", activeCount, activity.TakeLimit),
 		}
 	}
 
@@ -305,6 +306,17 @@ func (s *LockService) lockJoinTeam(ctx context.Context, req LockRequest, trial *
 		s.cacheRepo.ReleaseStock(ctx, req.ActivityID, req.TeamID, req.OutTradeNo)
 		return nil, &LockError{Code: errcode.CodeActivityTimeInvalid, Err: fmt.Errorf("team %s expired at %v", req.TeamID, team.ValidEnd)}
 	}
+
+		// 3. 防重复：同一用户不能在同一团有多个订单
+		exists, err := s.orderRepo.ExistsOrderByUserAndTeam(ctx, req.UserID, req.TeamID)
+		if err != nil {
+			s.cacheRepo.ReleaseStock(ctx, req.ActivityID, req.TeamID, req.OutTradeNo)
+			return nil, fmt.Errorf("lock: check duplicate join: %w", err)
+		}
+		if exists {
+			s.cacheRepo.ReleaseStock(ctx, req.ActivityID, req.TeamID, req.OutTradeNo)
+			return nil, &LockError{Code: errcode.CodeTakeLimitReached, Err: fmt.Errorf("user %s already joined team %s", req.UserID, req.TeamID)}
+		}
 
 	order := &model.Order{
 		UserID:         req.UserID,

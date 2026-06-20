@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -28,6 +29,7 @@ import (
 	"github.com/reuben/group-buying/internal/infra/mq"
 	"github.com/reuben/group-buying/internal/infra/mysql"
 	"github.com/reuben/group-buying/internal/infra/redis"
+	"github.com/reuben/group-buying/internal/middleware/admin"
 	"github.com/reuben/group-buying/internal/middleware/logging"
 	"github.com/reuben/group-buying/internal/middleware/recovery"
 	"github.com/reuben/group-buying/internal/middleware/tracing"
@@ -182,14 +184,24 @@ func New(cfg *config.Config) (*App, error) {
 	payHandler := handler.NewPayHandler(payGateway, paymentRepo, orderRepo, settlementSvc)
 
 	// 11. 组装 Handler 层
-	indexHandler := handler.NewIndexHandler(trialSvc)
+	indexHandler := handler.NewIndexHandler(trialSvc, orderRepo)
 	tradeHandler := handler.NewTradeHandler(lockSvc, settlementSvc, refundSvc)
 	adminHandler := handler.NewAdminHandler(dynMgr)
+
+	// 管理端 CRUD Handler
+	adminActivityHandler := handler.NewAdminActivityHandler(db)
+	adminProductHandler := handler.NewAdminProductHandler(db)
+	adminActivityProductHandler := handler.NewAdminActivityProductHandler(db)
+	adminCrowdHandler := handler.NewAdminCrowdHandler(db)
+	adminOrderHandler := handler.NewAdminOrderHandler(db)
+	adminTeamHandler := handler.NewAdminTeamHandler(db)
+	adminDashboardHandler := handler.NewAdminDashboardHandler(db)
 
 	// 12. 构建路由
 	gin.SetMode(cfg.Server.Mode)
 	router := gin.New()
 	router.Use(tracing.Middleware())
+	router.Use(charsetMiddleware())
 	router.Use(metricsMiddleware())
 	router.Use(logging.Middleware(logger))
 	router.Use(recovery.Middleware(logger))
@@ -203,8 +215,88 @@ func New(cfg *config.Config) (*App, error) {
 	router.POST("/api/v1/trade/refund", tradeHandler.Refund)
 	router.POST("/api/v1/pay/notify", payHandler.Notify)
 	router.GET("/api/v1/pay/qr", payHandler.ShowQR)
-	router.GET("/api/v1/admin/configs", adminHandler.ListConfigs)
-	router.PUT("/api/v1/admin/configs/:key", adminHandler.UpdateConfig)
+
+	// 用户端 — 拼团列表 & 详情
+	router.GET("/api/v1/teams", indexHandler.ListTeams)
+	router.GET("/api/v1/teams/:team_id", indexHandler.GetTeam)
+
+	// 用户端 — 支付查询
+	router.GET("/api/v1/payments/:out_trade_no", payHandler.GetPayment)
+
+	// 用户端 — 订单查询
+	router.GET("/api/v1/orders", adminOrderHandler.ListOrdersByUser)
+	router.GET("/api/v1/orders/:out_trade_no", adminOrderHandler.GetOrderByOutTradeNo)
+
+	// 管理端 — 统一挂载 admin 鉴权中间件
+	adminGroup := router.Group("/api/v1/admin")
+	adminGroup.Use(admin.Middleware(cfg.App.AdminToken))
+	{
+		// 动态配置
+		adminGroup.GET("/configs", adminHandler.ListConfigs)
+		adminGroup.PUT("/configs/:key", adminHandler.UpdateConfig)
+
+		// 仪表盘
+		adminGroup.GET("/dashboard", adminDashboardHandler.GetDashboard)
+
+		// 活动 & 折扣
+		adminGroup.GET("/activities", adminActivityHandler.ListActivities)
+		adminGroup.GET("/activities/:id", adminActivityHandler.GetActivity)
+		adminGroup.POST("/activities", adminActivityHandler.CreateActivity)
+		adminGroup.PUT("/activities/:id", adminActivityHandler.UpdateActivity)
+		adminGroup.DELETE("/activities/:id", adminActivityHandler.DeleteActivity)
+		adminGroup.GET("/discounts", adminActivityHandler.ListDiscounts)
+		adminGroup.GET("/discounts/:id", adminActivityHandler.GetDiscount)
+		adminGroup.POST("/discounts", adminActivityHandler.CreateDiscount)
+		adminGroup.PUT("/discounts/:id", adminActivityHandler.UpdateDiscount)
+		adminGroup.DELETE("/discounts/:id", adminActivityHandler.DeleteDiscount)
+
+		// 商品
+		adminGroup.GET("/products", adminProductHandler.ListProducts)
+		adminGroup.POST("/products", adminProductHandler.CreateProduct)
+		adminGroup.PUT("/products/:goods_id", adminProductHandler.UpdateProduct)
+		adminGroup.DELETE("/products/:goods_id", adminProductHandler.DeleteProduct)
+
+		// 活动-商品映射
+		adminGroup.GET("/activity-products", adminActivityProductHandler.ListActivityProducts)
+		adminGroup.POST("/activity-products", adminActivityProductHandler.CreateActivityProduct)
+		adminGroup.DELETE("/activity-products", adminActivityProductHandler.DeleteActivityProduct)
+
+		// 人群标签
+		adminGroup.GET("/crowd-tags", adminCrowdHandler.ListTags)
+		adminGroup.GET("/crowd-tags/:tag_id", adminCrowdHandler.GetTag)
+		adminGroup.POST("/crowd-tags", adminCrowdHandler.CreateTag)
+		adminGroup.PUT("/crowd-tags/:tag_id", adminCrowdHandler.UpdateTag)
+		adminGroup.DELETE("/crowd-tags/:tag_id", adminCrowdHandler.DeleteTag)
+		adminGroup.GET("/crowd-tags/:tag_id/members", adminCrowdHandler.ListMembers)
+		adminGroup.POST("/crowd-tags/:tag_id/members", adminCrowdHandler.AddMember)
+		adminGroup.DELETE("/crowd-tags/:tag_id/members/:user_id", adminCrowdHandler.RemoveMember)
+
+		// 订单监控
+		adminGroup.GET("/orders", adminOrderHandler.ListOrders)
+		adminGroup.GET("/orders/:order_id", adminOrderHandler.GetOrder)
+
+		// 队伍监控
+		adminGroup.GET("/teams", adminTeamHandler.ListTeams)
+		adminGroup.GET("/teams/:team_id", adminTeamHandler.GetTeam)
+		adminGroup.GET("/teams/:team_id/orders", adminTeamHandler.GetTeamOrders)
+	}
+
+	// 静态文件 + SPA fallback（生产模式：编译前 npm run build 到 web/dist/ 即可）
+	distPath := "web/dist"
+	if _, err := os.Stat(distPath); err == nil {
+		router.Static("/assets", distPath+"/assets")
+		router.StaticFile("/favicon.svg", distPath+"/favicon.svg")
+		router.NoRoute(func(c *gin.Context) {
+			// API 路径返回 JSON 404
+			if strings.HasPrefix(c.Request.URL.Path, "/api/") {
+				c.JSON(http.StatusNotFound, gin.H{"code": "0005", "info": "not found"})
+				return
+			}
+			// SPA fallback：所有其他路径返回 index.html
+			c.File(distPath + "/index.html")
+		})
+		logger.Info("frontend static files served", "path", distPath)
+	}
 
 	return &App{
 		cfg:        cfg,
@@ -480,3 +572,21 @@ func IncrCacheHit() { metricCacheHit.Add(1) }
 
 // IncrCacheMiss 缓存未命中计数（供 service 层调用）。
 func IncrCacheMiss() { metricCacheMiss.Add(1) }
+
+// charsetMiddleware 确保所有响应都带上 charset=utf-8。
+// Gin 的 c.JSON/c.String 已自带 charset，但静态文件服务（c.File/router.Static）
+// 依赖 http.ServeContent 的 MIME 检测，部分浏览器可能解析异常。
+// 此中间件为所有 text/* 类型响应补充 charset=utf-8。
+func charsetMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Next()
+		ct := c.Writer.Header().Get("Content-Type")
+		if ct != "" && !strings.Contains(ct, "charset") {
+			if strings.HasPrefix(ct, "text/") ||
+				strings.HasPrefix(ct, "application/json") ||
+				strings.HasPrefix(ct, "application/javascript") {
+				c.Writer.Header().Set("Content-Type", ct+"; charset=utf-8")
+			}
+		}
+	}
+}

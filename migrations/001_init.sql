@@ -37,7 +37,7 @@ CREATE TABLE `activities` (
   `group_type`    TINYINT         NOT NULL DEFAULT 0 COMMENT '0=自动成团 1=目标拼团',
   `target_count`  INT             NOT NULL DEFAULT 1 COMMENT '成团所需人数',
   `take_limit`    INT             NOT NULL DEFAULT 1 COMMENT '用户参与次数上限',
-  `valid_minutes` INT             NOT NULL DEFAULT 15 COMMENT '拼团有效时长（分钟）',
+  `valid_minutes` INT             NOT NULL DEFAULT 5 COMMENT '拼团有效时长（分钟）',
   `status`        TINYINT         NOT NULL DEFAULT 0 COMMENT '0=创建 1=生效 2=过期 3=废弃',
   `start_time`    DATETIME        NOT NULL COMMENT '活动开始时间',
   `end_time`      DATETIME        NOT NULL COMMENT '活动结束时间',
@@ -270,7 +270,7 @@ INSERT INTO `discounts` (`discount_id`, `name`, `description`, `plan_type`, `exp
 
 -- 插入测试活动
 INSERT INTO `activities` (`activity_id`, `name`, `discount_id`, `group_type`, `target_count`, `take_limit`, `valid_minutes`, `status`, `start_time`, `end_time`) VALUES
-(100123, '测试拼团活动', 'D001', 0, 3, 5, 30, 1, '2025-01-01 00:00:00', '2029-12-31 23:59:59');
+(100123, '测试拼团活动', 'D001', 0, 3, 5, 5, 1, '2025-01-01 00:00:00', '2029-12-31 23:59:59');
 
 -- 插入测试商品
 INSERT INTO `products` (`goods_id`, `goods_name`, `original_price`) VALUES

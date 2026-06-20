@@ -29,7 +29,8 @@ const (
 	CodeOrderTimeInvalid    = "E0106" // 订单交易时间不在拼团有效时间范围内
 	CodeRefundStateInvalid  = "E0107" // 订单状态不允许退单
 
-	CodeRateLimit = "E0200" // 请求过于频繁
+	CodeRateLimit  = "E0200" // 请求过于频繁
+	CodeAuthFailed = "E0201" // 鉴权失败
 
 	// 支付错误码
 	CodePayCreateFailed   = "P0001" // 创建支付单失败
@@ -61,6 +62,7 @@ var codeMessages = map[string]string{
 	CodeOrderTimeInvalid:    "订单交易时间不在拼团有效时间范围内",
 	CodeRefundStateInvalid:  "订单状态不允许退单",
 	CodeRateLimit:           "请求过于频繁",
+	CodeAuthFailed:          "鉴权失败",
 	CodePayCreateFailed:     "创建支付单失败",
 	CodePayNotifyVerify:     "支付回调验签失败",
 	CodePayNotifyNotFound:   "支付回调对应订单不存在",

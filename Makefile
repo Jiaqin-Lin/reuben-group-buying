@@ -1,12 +1,17 @@
-.PHONY: build run test lint clean dev up down
+.PHONY: build run test lint clean dev up down build-web
 
 # Variables
 APP_NAME := group-buy
 CMD_DIR := ./cmd/server
 BUILD_DIR := ./bin
 
-# Build
+# Build (backend only)
 build:
+	go build -o $(BUILD_DIR)/$(APP_NAME) $(CMD_DIR)
+
+# Build web + backend together (production)
+build-web:
+	cd web && npm run build
 	go build -o $(BUILD_DIR)/$(APP_NAME) $(CMD_DIR)
 
 run: build

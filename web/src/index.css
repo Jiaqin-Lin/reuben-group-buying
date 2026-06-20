@@ -1,0 +1,182 @@
+@import "tailwindcss";
+
+/* ===== Design Tokens — Premium Utilitarian Minimalism ===== */
+
+@theme {
+  /* Typography — skill directive: no Inter/Roboto/Open Sans */
+  --font-sans: 'SF Pro Display', 'Geist Sans', 'Helvetica Neue', 'Switzer',
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-serif: 'Newsreader', 'Lyon Text', 'Playfair Display', 'Instrument Serif',
+    Georgia, serif;
+  --font-mono: 'JetBrains Mono', 'Geist Mono', 'SF Mono', 'Fira Code',
+    ui-monospace, monospace;
+
+  /* Type scale */
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1rem;
+  --text-sm: 0.875rem;
+  --text-sm--line-height: 1.25rem;
+  --text-base: 1rem;
+  --text-base--line-height: 1.6;
+  --text-lg: 1.125rem;
+  --text-lg--line-height: 1.75rem;
+  --text-xl: 1.25rem;
+  --text-xl--line-height: 1.75rem;
+  --text-2xl: 1.5rem;
+  --text-2xl--line-height: 2rem;
+  --text-3xl: 1.875rem;
+  --text-3xl--line-height: 2.25rem;
+  --text-4xl: 2.25rem;
+  --text-4xl--line-height: 2.5rem;
+
+  /* Warm monochrome palette */
+  --color-canvas: #f7f6f3;
+  --color-surface: #ffffff;
+  --color-border: #eaeaea;
+  --color-border-light: rgba(0, 0, 0, 0.06);
+
+  /* Text hierarchy — never absolute black */
+  --color-text-primary: #111111;
+  --color-text-secondary: #787774;
+  --color-text-muted: #9a9996;
+
+  /* Accent — warm amber (Claude-inspired) */
+  --color-accent: #d97706;
+  --color-accent-hover: #b45309;
+  --color-accent-soft: rgba(217, 119, 6, 0.08);
+  --color-accent-border: rgba(217, 119, 6, 0.3);
+
+  /* Muted pastels for tags/badges — skill directive */
+  --color-pale-red: #fdebec;
+  --color-pale-red-text: #9f2f2d;
+  --color-pale-blue: #e1f3fe;
+  --color-pale-blue-text: #1f6c9f;
+  --color-pale-green: #edf3ec;
+  --color-pale-green-text: #346538;
+  --color-pale-yellow: #fbf3db;
+  --color-pale-yellow-text: #956400;
+  --color-pale-gray: #f2f1ef;
+  --color-pale-gray-text: #787774;
+
+  /* Semantic */
+  --color-success: #346538;
+  --color-success-bg: #edf3ec;
+  --color-error: #9f2f2d;
+  --color-error-bg: #fdebec;
+  --color-warning: #956400;
+  --color-warning-bg: #fbf3db;
+
+  /* Spacing — generous whitespace */
+  --spacing-section: 6rem;
+
+  /* Border radius — crisp, never pill-shaped for large elements */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-pill: 9999px;
+
+  /* Shadows — practically non-existent per skill directive */
+  --shadow-card: 0 0 0 1px rgba(0, 0, 0, 0.04);
+  --shadow-card-hover: 0 2px 8px rgba(0, 0, 0, 0.04);
+  --shadow-modal: 0 4px 24px rgba(0, 0, 0, 0.08);
+}
+
+/* ===== Base Styles ===== */
+
+html {
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.6;
+  color: var(--color-text-primary);
+  background: var(--color-canvas);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+/* Headings — editorial serif for hero-level, sans for UI */
+h1, h2, h3, h4 {
+  font-family: var(--font-sans);
+  font-weight: 500;
+  color: var(--color-text-primary);
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+/* Serif hero variant */
+.heading-serif {
+  font-family: var(--font-serif);
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+}
+
+/* Code / monospace */
+code, kbd, .font-mono {
+  font-family: var(--font-mono);
+}
+
+kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-canvas);
+  padding: 2px 6px;
+  font-size: var(--text-xs);
+  line-height: 1;
+  color: var(--color-text-secondary);
+}
+
+/* Scroll entry animation base */
+.animate-enter {
+  opacity: 0;
+  transform: translateY(12px);
+  transition: opacity 600ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 600ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.animate-enter.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Subtle background ambient — fixed layer behind everything */
+.ambient-glow {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(ellipse 80% 60% at 50% 0%, rgba(217, 119, 6, 0.03) 0%, transparent 60%),
+    radial-gradient(ellipse 60% 40% at 80% 100%, rgba(217, 119, 6, 0.02) 0%, transparent 50%);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: var(--radius-pill);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-muted);
+}
+
+/* Remove default Vite styles */
+#root {
+  position: relative;
+  z-index: 1;
+  min-height: 100vh;
+}

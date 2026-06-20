@@ -10,9 +10,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/reuben/group-buying/internal/errcode"
 	"github.com/reuben/group-buying/internal/model"
 	"github.com/reuben/group-buying/internal/pay"
 	"github.com/reuben/group-buying/internal/repository"
+	"github.com/reuben/group-buying/internal/response"
 	"github.com/reuben/group-buying/internal/service"
 )
 
@@ -158,6 +160,26 @@ func (h *PayHandler) recordPaymentLog(ctx context.Context, orderID, notifyID, ra
 		slog.WarnContext(ctx, "pay notify: create payment log failed",
 			"notify_id", notifyID, "error", err)
 	}
+}
+
+// GetPayment 查询支付单 — GET /api/v1/payments/:out_trade_no。
+//
+// 前端"继续支付"或支付弹窗轮询时调用。
+// 响应：{ "payment": {...} }
+func (h *PayHandler) GetPayment(c *gin.Context) {
+	outTradeNo := c.Param("out_trade_no")
+	if outTradeNo == "" {
+		response.Fail(c, errcode.CodeInvalidParam)
+		return
+	}
+
+	payment, err := h.paymentRepo.FindPaymentByOutTradeNo(c.Request.Context(), outTradeNo)
+	if err != nil {
+		response.FailWithMsg(c, errcode.CodeOrderNotFound, "payment not found")
+		return
+	}
+
+	response.Success(c, gin.H{"payment": payment})
 }
 
 // ShowQR 展示支付二维码页面。

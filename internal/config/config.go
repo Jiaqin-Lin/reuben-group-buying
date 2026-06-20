@@ -66,6 +66,7 @@ type AppConfig struct {
 	OrderLockTTL        int    `mapstructure:"order_lock_ttl"`
 	NotifyMaxRetry      int    `mapstructure:"notify_max_retry"`
 	TimeoutScanInterval int    `mapstructure:"timeout_scan_interval"`
+	AdminToken          string `mapstructure:"admin_token"`
 }
 
 // AlipayConfig 支付宝支付配置。
@@ -141,6 +142,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("app.order_lock_ttl", 3)
 	v.SetDefault("app.notify_max_retry", 5)
 	v.SetDefault("app.timeout_scan_interval", 30)
+	v.SetDefault("app.admin_token", "admin-dev-token")
 
 	v.SetDefault("alipay.sandbox", true)
 	v.SetDefault("alipay.sign_type", "RSA2")
