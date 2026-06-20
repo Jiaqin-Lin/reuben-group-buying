@@ -70,6 +70,14 @@ export function Header({ variant = 'user', onToggleMenu }: HeaderProps) {
               管理
             </Link>
           )}
+          {variant === 'admin' && (
+            <Link
+              to="/"
+              className="text-sm text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] transition-colors no-underline"
+            >
+              返回拼团
+            </Link>
+          )}
           {isLoggedIn ? (
             <div className="flex items-center gap-2">
               {switching ? (

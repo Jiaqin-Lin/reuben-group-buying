@@ -113,6 +113,13 @@ type OrderRepository interface {
 	// RollbackJoinTeam 删除加入团时创建的 order，并回退 team.lock_count -= 1。
 	// 用于支付创建失败时的补偿事务。
 	RollbackJoinTeam(ctx context.Context, teamID, orderID string) error
+
+	// CreateDirectOrder 创建直接购买订单（不创团，不走名额占用）。
+	// 直接购买不关联活动和团，team_id=""，activity_id=0。
+	CreateDirectOrder(ctx context.Context, order *model.Order) error
+
+	// DeleteOrder 删除订单（直接购买支付创建失败时的补偿）。
+	DeleteOrder(ctx context.Context, orderID string) error
 }
 
 // TimeoutOrder 超时订单联表查询结果。
@@ -516,10 +523,13 @@ func (r *orderRepo) SettleOrder(ctx context.Context, params SettleOrderParams) (
 
 func (r *orderRepo) FindTimeoutOrders(ctx context.Context, limit int, lastID uint64) ([]TimeoutOrder, error) {
 	// 游标分页：用 orders.id > lastID 代替 OFFSET，避免大偏移量性能问题。
-	// 两种超时条件（满足其一即退单）：
-	//   1. 订单支付超时：orders.created_at + 5 分钟 < NOW()（锁单不付钱 5 分钟退单）
-	//   2. 拼团过期：teams.valid_end < NOW()（团超过拼团有效期解散）
+	// 两类超时订单：
+	//   A. 拼团订单：JOIN teams，按支付超时(5min)或拼团过期(valid_end)判定
+	//   B. 直接购买订单：team_id=""，仅按支付超时(5min)判定
 	var orders []TimeoutOrder
+
+	// 查询 A：拼团订单
+	var groupOrders []TimeoutOrder
 	err := r.db.WithContext(ctx).
 		Table("orders").
 		Select("orders.*, teams.valid_end AS team_valid_end").
@@ -529,14 +539,34 @@ func (r *orderRepo) FindTimeoutOrders(ctx context.Context, limit int, lastID uin
 		Where("(orders.created_at + INTERVAL 5 MINUTE < NOW() OR teams.valid_end < NOW())").
 		Order("orders.id ASC").
 		Limit(limit).
-		Find(&orders).Error
+		Find(&groupOrders).Error
 	if err != nil {
-		return nil, fmt.Errorf("find timeout orders: %w", err)
+		return nil, fmt.Errorf("find timeout orders (group): %w", err)
 	}
+	orders = append(orders, groupOrders...)
+
+	// 查询 B：直接购买订单（仅支付超时，无 team）
+	remaining := limit - len(orders)
+	if remaining > 0 {
+		var directOrders []TimeoutOrder
+		err := r.db.WithContext(ctx).
+			Table("orders").
+			Select("orders.*, '' AS team_valid_end").
+			Where("orders.team_id = ?", "").
+			Where("orders.status = ?", model.OrderStatusLocked).
+			Where("orders.id > ?", lastID).
+			Where("orders.created_at + INTERVAL 5 MINUTE < NOW()").
+			Order("orders.id ASC").
+			Limit(remaining).
+			Find(&directOrders).Error
+		if err != nil {
+			return nil, fmt.Errorf("find timeout orders (direct): %w", err)
+		}
+		orders = append(orders, directOrders...)
+	}
+
 	return orders, nil
 }
-
-// FindTeamsByActivityID 查活动下所有团（含进行中、已成团、已失败），带分页。
 func (r *orderRepo) FindTeamsByActivityID(ctx context.Context, activityID int64, offset, limit int) ([]model.Team, int64, error) {
 	var total int64
 	if err := r.db.WithContext(ctx).Model(&model.Team{}).
@@ -599,4 +629,14 @@ func (r *orderRepo) RollbackJoinTeam(ctx context.Context, teamID, orderID string
 		}
 		return nil
 	})
+}
+
+// CreateDirectOrder 创建直接购买订单（不创团，不走名额占用）。
+func (r *orderRepo) CreateDirectOrder(ctx context.Context, order *model.Order) error {
+	return r.db.WithContext(ctx).Create(order).Error
+}
+
+// DeleteOrder 删除订单（支付创建失败时的补偿）。
+func (r *orderRepo) DeleteOrder(ctx context.Context, orderID string) error {
+	return r.db.WithContext(ctx).Where("order_id = ?", orderID).Delete(&model.Order{}).Error
 }

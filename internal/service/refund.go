@@ -101,6 +101,11 @@ func (s *RefundService) Refund(ctx context.Context, req RefundRequest) (*RefundR
 		return s.idempotentResult(ctx, order)
 	}
 
+	// 2b. 直接购买订单：不关联团，无需团队操作
+	if order.TeamID == "" {
+		return s.directRefund(ctx, order)
+	}
+
 	// 3. 查团
 	team, err := s.orderRepo.FindTeamByID(ctx, order.TeamID)
 	if err != nil {
@@ -377,6 +382,42 @@ func (s *RefundService) paidRefundFailedTeam(ctx context.Context, order *model.O
 // 订单状态更新失败（RowsAffected=0）时，重新查询订单状态：
 //   - 已退款 → 幂等返回
 //   - 其他状态 → 返回错误（被别的操作改动了）
+// directRefund 直接购买退单——不关联团，跳过团队操作。
+func (s *RefundService) directRefund(ctx context.Context, order *model.Order) (*RefundResult, error) {
+	slog.DebugContext(ctx, "refund: direct buy", "order_id", order.OrderID)
+
+	// 已支付的需要调支付网关退款
+	if order.Status == model.OrderStatusPaid && s.payGateway != nil {
+		if _, err := s.payGateway.Refund(ctx, order.OrderID, order.PayPrice); err != nil {
+			slog.ErrorContext(ctx, "refund direct: gateway refund failed", "order_id", order.OrderID, "error", err)
+			return nil, &RefundError{Code: refundErrCode(err), Err: fmt.Errorf("gateway refund: %w", err)}
+		}
+	}
+
+	// 更新订单状态
+	fromStatus := order.Status
+	if err := s.orderRepo.UpdateOrderStatusWithCheck(ctx, order.OrderID, fromStatus, model.OrderStatusRefunded); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return s.handleConcurrentRefund(ctx, order)
+		}
+		return nil, fmt.Errorf("refund direct: update order: %w", err)
+	}
+
+	// 未支付的关闭 payment
+	if fromStatus == model.OrderStatusLocked {
+		s.closePayment(ctx, order.OrderID)
+	}
+
+	slog.InfoContext(ctx, "refund direct done", "order_id", order.OrderID)
+	return &RefundResult{
+		OrderID:    order.OrderID,
+		OutTradeNo: order.OutTradeNo,
+		TeamID:     "",
+		ActivityID: 0,
+		RefundType: "direct",
+		TeamStatus: 0,
+	}, nil
+}
 func (s *RefundService) handleConcurrentRefund(ctx context.Context, order *model.Order) (*RefundResult, error) {
 	fresh, lookupErr := s.orderRepo.FindOrderByOutTradeNo(ctx, order.OutTradeNo)
 	if lookupErr != nil {

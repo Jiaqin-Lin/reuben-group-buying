@@ -4,23 +4,21 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import QRCode from 'qrcode';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
-import { useTrial } from '../../hooks/useTrial';
 import { useLockOrder } from '../../hooks/useLockOrder';
-import { teamApi } from '../../api/index';
+import { teamApi, productApi } from '../../api/index';
 import { tradeApi } from '../../api/trade';
 import { orderApi } from '../../api/admin';
 import { Button } from '../../components/ui/Button';
-import { Card } from '../../components/ui/Card';
-import { Badge } from '../../components/ui/Badge';
 import { Modal } from '../../components/ui/Modal';
 import { PriceDisplay } from '../../components/ui/PriceDisplay';
 import { Loading } from '../../components/ui/Loading';
 import { ErrorState } from '../../components/ui/ErrorState';
+import { ProductCard } from '../../components/home/ProductCard';
 import { TeamList } from '../../components/home/TeamList';
-import { DEFAULT_SOURCE, DEFAULT_CHANNEL, DEFAULT_GOODS_ID, POLL_INTERVAL, PAYMENT_TTL } from '../../utils/constants';
+import { DEFAULT_SOURCE, DEFAULT_CHANNEL, POLL_INTERVAL, PAYMENT_TTL } from '../../utils/constants';
 import { getErrorMessage } from '../../utils/constants';
 import { formatCountdown, generateOutTradeNo } from '../../utils/format';
-import type { TrialResult, LockResult } from '../../api/types';
+import type { LockResult, ProductWithActivity } from '../../api/types';
 
 
 export function HomePage() {
@@ -28,10 +26,9 @@ export function HomePage() {
   const navigate = useNavigate();
   const { addToast } = useToast();
   const queryClient = useQueryClient();
-  const trialMutation = useTrial();
   const lockMutation = useLockOrder();
 
-  const [trialResult, setTrialResult] = useState<TrialResult | null>(null);
+  const [selectedProduct, setSelectedProduct] = useState<ProductWithActivity | null>(null);
   const [lockResult, setLockResult] = useState<LockResult | null>(null);
   const [showPayment, setShowPayment] = useState(false);
   const [paymentConfirmClose, setPaymentConfirmClose] = useState(false);
@@ -42,31 +39,28 @@ export function HomePage() {
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const countdownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Reusable trial trigger
-  const doTrial = useCallback(() => {
-    if (!userId) return;
-    trialMutation.mutate(
-      {
-        user_id: userId,
-        goods_id: DEFAULT_GOODS_ID,
-        source: DEFAULT_SOURCE,
-        channel: DEFAULT_CHANNEL,
-      },
-      {
-        onSuccess: (data) => setTrialResult(data),
-        onError: (err) => addToast(getErrorMessage(err.code), 'error'),
-      },
-    );
-  }, [userId, trialMutation.mutate, addToast]);
+  // Product list
+  const {
+    data: productsData,
+    isLoading: productsLoading,
+    isError: productsError,
+    error: productsErr,
+    refetch: refetchProducts,
+  } = useQuery({
+    queryKey: ['products'],
+    queryFn: () => productApi.list(),
+    enabled: isLoggedIn && !!userId,
+  });
+  const products = productsData?.products || [];
 
-  // Teams list
+  // Teams list for selected product
   const { data: teamsData, isLoading: teamsLoading, refetch: refetchTeams } = useQuery({
-    queryKey: ['teams', trialResult?.activity_id],
-    queryFn: () => teamApi.listByActivity(trialResult!.activity_id, 1, 20),
-    enabled: !!trialResult?.activity_id,
+    queryKey: ['teams', selectedProduct?.activity?.activity_id],
+    queryFn: () => teamApi.listByActivity(selectedProduct!.activity!.activity_id, 1, 20),
+    enabled: !!selectedProduct?.activity?.activity_id,
   });
 
-  // User's orders in current activity — for "已加入" indicator
+  // User's orders for "已加入" indicator
   const { data: myOrders } = useQuery({
     queryKey: ['my-orders', userId],
     queryFn: () => orderApi.listByUser(userId!),
@@ -74,17 +68,18 @@ export function HomePage() {
   });
   const myTeamIds = new Set(
     (myOrders || [])
-      .filter((o) => o.activity_id === trialResult?.activity_id && o.status !== 2)
+      .filter((o) => o.activity_id === selectedProduct?.activity?.activity_id && o.status !== 2)
       .map((o) => o.team_id),
   );
 
-  // Load trial on mount or when userId changes
+  // Auto-select first product on load
   useEffect(() => {
-    if (!isLoggedIn) return;
-    doTrial();
-  }, [isLoggedIn, userId, doTrial]);
+    if (products.length > 0 && !selectedProduct) {
+      setSelectedProduct(products[0]);
+    }
+  }, [products, selectedProduct]);
 
-  // Generate QR code when lockResult changes
+  // Generate QR code
   useEffect(() => {
     if (!lockResult?.pay_url) {
       setQrDataUrl(null);
@@ -95,7 +90,7 @@ export function HomePage() {
       .catch(() => setQrDataUrl(null));
   }, [lockResult?.pay_url]);
 
-  // Countdown timer — driven by showPayment, reads endTime from ref
+  // Countdown timer
   useEffect(() => {
     if (!showPayment) {
       setCountdown('');
@@ -120,9 +115,15 @@ export function HomePage() {
     };
   }, [showPayment]);
 
-  // Poll payment status when modal is open
+  // Poll payment status
   const lockResultRef = useRef(lockResult);
   lockResultRef.current = lockResult;
+
+  const refreshAll = useCallback(() => {
+    refetchProducts();
+    refetchTeams();
+    queryClient.invalidateQueries({ queryKey: ['my-orders', userId] });
+  }, [refetchProducts, refetchTeams, queryClient, userId]);
 
   useEffect(() => {
     if (!showPayment || !lockResult) return;
@@ -135,18 +136,16 @@ export function HomePage() {
         if (result.payment?.status === 1) {
           setShowPayment(false);
           addToast('支付成功！', 'success');
-          doTrial();
-          refetchTeams();
-          queryClient.invalidateQueries({ queryKey: ['my-orders', userId] });
+          refreshAll();
         }
       } catch {
-        // Not paid yet, keep polling
+        // Not paid yet
       }
     };
 
     pollTimerRef.current = setInterval(poll, POLL_INTERVAL);
     return () => stopPolling();
-  }, [showPayment, lockResult, doTrial, addToast, refetchTeams]);
+  }, [showPayment, lockResult, addToast, refreshAll]);
 
   const stopPolling = () => {
     if (pollTimerRef.current) {
@@ -155,23 +154,21 @@ export function HomePage() {
     }
   };
 
-  const doLock = (teamId?: string) => {
-    if (!isLoggedIn) {
-      navigate('/login');
-      return;
-    }
+  // Lock: 开团购买 (buy_type=group)
+  const handleStartGroup = (product: ProductWithActivity) => {
+    if (!isLoggedIn || !product.activity) return;
     stopPolling();
     const outTradeNo = generateOutTradeNo();
-    setJoiningTeamId(teamId || null);
+    setJoiningTeamId(null);
     lockMutation.mutate(
       {
         user_id: userId!,
-        activity_id: trialResult!.activity_id,
-        goods_id: DEFAULT_GOODS_ID,
+        activity_id: product.activity.activity_id,
+        goods_id: product.goods_id,
         source: DEFAULT_SOURCE,
         channel: DEFAULT_CHANNEL,
         out_trade_no: outTradeNo,
-        team_id: teamId,
+        buy_type: 'group',
       },
       {
         onSuccess: (data) => {
@@ -179,12 +176,67 @@ export function HomePage() {
           setShowPayment(true);
           setPaymentConfirmClose(false);
           addToast('下单成功', 'success');
-          refetchTeams();
-          queryClient.invalidateQueries({ queryKey: ['my-orders', userId] });
+          refreshAll();
         },
-        onError: (err) => {
-          addToast(getErrorMessage(err.code), 'error');
+        onError: (err) => addToast(getErrorMessage(err.code), 'error'),
+      },
+    );
+  };
+
+  // Lock: 直接购买 (buy_type=direct)
+  const handleDirectBuy = (product: ProductWithActivity) => {
+    if (!isLoggedIn) return;
+    stopPolling();
+    const outTradeNo = generateOutTradeNo();
+    setJoiningTeamId(null);
+    lockMutation.mutate(
+      {
+        user_id: userId!,
+        activity_id: 0,
+        goods_id: product.goods_id,
+        source: DEFAULT_SOURCE,
+        channel: DEFAULT_CHANNEL,
+        out_trade_no: outTradeNo,
+        buy_type: 'direct',
+      },
+      {
+        onSuccess: (data) => {
+          setLockResult(data);
+          setShowPayment(true);
+          setPaymentConfirmClose(false);
+          addToast('下单成功', 'success');
         },
+        onError: (err) => addToast(getErrorMessage(err.code), 'error'),
+      },
+    );
+  };
+
+  // Join existing team
+  const handleJoinTeam = (teamId: string) => {
+    if (!isLoggedIn || !selectedProduct?.activity) return;
+    stopPolling();
+    const outTradeNo = generateOutTradeNo();
+    setJoiningTeamId(teamId);
+    lockMutation.mutate(
+      {
+        user_id: userId!,
+        activity_id: selectedProduct.activity.activity_id,
+        goods_id: selectedProduct.goods_id,
+        source: DEFAULT_SOURCE,
+        channel: DEFAULT_CHANNEL,
+        out_trade_no: outTradeNo,
+        team_id: teamId,
+        buy_type: 'group',
+      },
+      {
+        onSuccess: (data) => {
+          setLockResult(data);
+          setShowPayment(true);
+          setPaymentConfirmClose(false);
+          addToast('加入成功', 'success');
+          refreshAll();
+        },
+        onError: (err) => addToast(getErrorMessage(err.code), 'error'),
       },
     );
   };
@@ -207,7 +259,7 @@ export function HomePage() {
   }
 
   // Loading
-  if (trialMutation.isPending) {
+  if (productsLoading) {
     return (
       <div className="max-w-2xl mx-auto px-4 py-8">
         <Loading lines={5} />
@@ -216,28 +268,26 @@ export function HomePage() {
   }
 
   // Error
-  if (trialMutation.isError || !trialResult) {
+  if (productsError) {
     return (
       <ErrorState
         message={
-          trialMutation.error
-            ? getErrorMessage(trialMutation.error.code)
-            : '加载失败'
+          productsErr ? getErrorMessage((productsErr as { code?: string }).code || '0001') : '加载失败'
         }
-        onRetry={() => doTrial()}
+        onRetry={() => refetchProducts()}
       />
     );
   }
 
-  // Activity not visible
-  if (!trialResult.is_visible) {
+  // Empty
+  if (products.length === 0) {
     return (
       <div className="max-w-2xl mx-auto px-4 py-24 text-center">
         <h2 className="text-xl font-medium text-[var(--color-text-primary)] mb-2">
-          暂无可用活动
+          暂无商品
         </h2>
         <p className="text-[var(--color-text-muted)]">
-          当前没有适合您的拼团活动，请稍后再来
+          当前没有可购买的商品
         </p>
       </div>
     );
@@ -247,54 +297,55 @@ export function HomePage() {
 
   return (
     <div className="max-w-2xl mx-auto px-4 py-8">
-      {/* Product Hero */}
-      <section className="mb-8">
-        <div className="flex items-start justify-between mb-3">
-          <div>
-            <h1 className="text-2xl font-medium text-[var(--color-text-primary)] mb-1">
-              {trialResult.goods_name}
-            </h1>
-            <p className="text-sm text-[var(--color-text-muted)]">
-              {trialResult.target_count}人成团
-              {trialResult.is_enable ? '，进行中' : '，未开启'}
-            </p>
-          </div>
-          <Badge variant="warning">直降优惠</Badge>
-        </div>
-
-        <Card padding="lg" className="mb-6">
-          <PriceDisplay
-            originalPrice={trialResult.original_price}
-            payPrice={trialResult.pay_price}
-            deductionPrice={trialResult.deduction_price}
-            size="lg"
-          />
-        </Card>
-
-        {/* Action button */}
-        <div className="flex gap-3">
-          <Button
-            size="lg"
-            className="w-full"
-            onClick={() => doLock()}
-            loading={lockMutation.isPending && !joiningTeamId}
-            disabled={!trialResult.is_enable || lockMutation.isPending}
-          >
-            开团购买
-          </Button>
-        </div>
+      {/* Hero heading */}
+      <section className="mb-6">
+        <h1 className="heading-serif text-3xl mb-1">拼团买，更划算</h1>
+        <p className="text-sm text-[var(--color-text-muted)]">
+          选择商品，发起或加入拼团，享受优惠价格
+        </p>
       </section>
 
-      {/* Team list */}
-      <TeamList
-        teams={teams}
-        teamsLoading={teamsLoading}
-        isEnabled={trialResult.is_enable}
-        joiningTeamId={joiningTeamId}
-        isLockPending={lockMutation.isPending}
-        myTeamIds={myTeamIds}
-        onJoin={(teamId) => doLock(teamId)}
-      />
+      {/* Product cards */}
+      <section className="mb-6 space-y-3">
+        {products.map((p) => (
+          <div
+            key={p.goods_id}
+            onClick={() => setSelectedProduct(p)}
+            className="cursor-pointer"
+          >
+            <ProductCard
+              product={p}
+              isSelected={selectedProduct?.goods_id === p.goods_id}
+              onStartGroup={() => handleStartGroup(p)}
+              onDirectBuy={() => handleDirectBuy(p)}
+              isLockPending={lockMutation.isPending}
+            />
+          </div>
+        ))}
+      </section>
+
+      {/* Team list (only for selected product with activity) */}
+      {selectedProduct?.activity && (
+        <section>
+          <div className="flex items-center gap-2 mb-3">
+            <h2 className="text-sm font-medium text-[var(--color-text-muted)] uppercase tracking-wide">
+              拼团队伍
+            </h2>
+            <span className="text-xs text-[var(--color-text-muted)]">
+              {selectedProduct.goods_name}
+            </span>
+          </div>
+          <TeamList
+            teams={teams}
+            teamsLoading={teamsLoading}
+            isEnabled={true}
+            joiningTeamId={joiningTeamId}
+            isLockPending={lockMutation.isPending}
+            myTeamIds={myTeamIds}
+            onJoin={handleJoinTeam}
+          />
+        </section>
+      )}
 
       {/* Payment Modal */}
       <Modal
@@ -338,7 +389,7 @@ export function HomePage() {
               deductionPrice={lockResult.deduction_price}
             />
 
-            {/* QR Code — 280x280 */}
+            {/* QR Code */}
             {qrDataUrl ? (
               <div className="flex flex-col items-center gap-2">
                 <img
@@ -366,9 +417,11 @@ export function HomePage() {
             <div className="text-xs text-[var(--color-text-muted)] font-mono">
               <p>订单号: {lockResult.order_id}</p>
               <p>外部单号: {lockResult.out_trade_no}</p>
-              <p className="mt-1 text-[var(--color-warning)]">
-                队伍: {lockResult.team_id}
-              </p>
+              {lockResult.team_id && (
+                <p className="mt-1 text-[var(--color-warning)]">
+                  队伍: {lockResult.team_id}
+                </p>
+              )}
             </div>
 
             <div className="flex gap-3 w-full">

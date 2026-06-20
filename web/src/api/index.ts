@@ -1,5 +1,5 @@
 import { api } from './client';
-import type { PaginatedResponse, Team, Order } from './types';
+import type { PaginatedResponse, Team, Order, ProductWithActivity } from './types';
 
 export const teamApi = {
   listByActivity: (activityId: number, page = 1, pageSize = 20) => {
@@ -12,4 +12,9 @@ export const teamApi = {
   },
   getDetail: (teamId: string) =>
     api.get<{ team: Team; members: Order[] }>(`/api/v1/teams/${teamId}`),
+};
+
+export const productApi = {
+  list: () =>
+    api.get<{ products: ProductWithActivity[] }>('/api/v1/products'),
 };

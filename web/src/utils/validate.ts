@@ -80,3 +80,10 @@ export function validateForm(rules: Array<{ field: string; check: () => string |
   }
   return errors;
 }
+
+/** Remove a field from errors (e.g. when user starts correcting it). */
+export function clearError(prev: FieldErrors, field: string): FieldErrors {
+  const next = { ...prev };
+  delete next[field];
+  return next;
+}

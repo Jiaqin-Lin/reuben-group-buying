@@ -10,7 +10,7 @@ import { ErrorState } from '../../components/ui/ErrorState';
 import { useToast } from '../../context/ToastContext';
 import { formatPrice } from '../../utils/format';
 import { getErrorMessage } from '../../utils/constants';
-import { required, priceFormat, validateForm, type FieldErrors } from '../../utils/validate';
+import { required, priceFormat, clearError, validateForm, type FieldErrors } from '../../utils/validate';
 import type { Product } from '../../api/types';
 
 const emptyForm = { goods_id: '', goods_name: '', original_price: '' };
@@ -103,9 +103,9 @@ export function ProductListPage() {
 
       <Modal open={showForm} onClose={() => setShowForm(false)} title={editing ? '编辑商品' : '新建商品'}>
         <div className="flex flex-col gap-4">
-          <Input label="商品 ID" value={form.goods_id} onChange={e => { setForm({ ...form, goods_id: e.target.value }); setErrors(prev => ({ ...prev, goods_id: '' })); }} disabled={!!editing} error={errors.goods_id} />
+          <Input label="商品 ID" value={form.goods_id} onChange={e => { setForm({ ...form, goods_id: e.target.value }); setErrors(prev => clearError(prev, 'goods_id')); }} disabled={!!editing} error={errors.goods_id} />
           <Input label="名称" value={form.goods_name} onChange={e => setForm({ ...form, goods_name: e.target.value })} error={errors.goods_name} />
-          <Input label="原价" value={form.original_price} onChange={e => { setForm({ ...form, original_price: e.target.value }); setErrors(prev => ({ ...prev, original_price: '' })); }} placeholder="100.00" error={errors.original_price} />
+          <Input label="原价" value={form.original_price} onChange={e => { setForm({ ...form, original_price: e.target.value }); setErrors(prev => clearError(prev, 'original_price')); }} placeholder="100.00" error={errors.original_price} />
         </div>
         <div className="flex justify-end gap-3 mt-6">
           <Button variant="secondary" onClick={() => setShowForm(false)}>取消</Button>

@@ -9,7 +9,7 @@ import { Loading } from '../../components/ui/Loading';
 import { ErrorState } from '../../components/ui/ErrorState';
 import { useToast } from '../../context/ToastContext';
 import { getErrorMessage } from '../../utils/constants';
-import { required, validateForm, type FieldErrors } from '../../utils/validate';
+import { required, clearError, validateForm, type FieldErrors } from '../../utils/validate';
 import type { ActivityProduct } from '../../api/types';
 
 const emptyForm = { source: '', channel: '', goods_id: '', activity_id: 0 };
@@ -91,10 +91,10 @@ export function ActivityProductPage() {
 
       <Modal open={showForm} onClose={() => setShowForm(false)} title="添加映射">
         <div className="flex flex-col gap-4">
-          <Input label="来源 (source)" value={form.source} onChange={e => { setForm({ ...form, source: e.target.value }); setErrors(prev => ({ ...prev, source: '' })); }} placeholder="APP" error={errors.source} />
-          <Input label="渠道 (channel)" value={form.channel} onChange={e => { setForm({ ...form, channel: e.target.value }); setErrors(prev => ({ ...prev, channel: '' })); }} placeholder="WECHAT" error={errors.channel} />
-          <Input label="商品 ID" value={form.goods_id} onChange={e => { setForm({ ...form, goods_id: e.target.value }); setErrors(prev => ({ ...prev, goods_id: '' })); }} error={errors.goods_id} />
-          <Input label="活动 ID" type="number" value={String(form.activity_id)} onChange={e => { setForm({ ...form, activity_id: Number(e.target.value) }); setErrors(prev => ({ ...prev, activity_id: '' })); }} error={errors.activity_id} />
+          <Input label="来源 (source)" value={form.source} onChange={e => { setForm({ ...form, source: e.target.value }); setErrors(prev => clearError(prev, 'source')); }} placeholder="APP" error={errors.source} />
+          <Input label="渠道 (channel)" value={form.channel} onChange={e => { setForm({ ...form, channel: e.target.value }); setErrors(prev => clearError(prev, 'channel')); }} placeholder="WECHAT" error={errors.channel} />
+          <Input label="商品 ID" value={form.goods_id} onChange={e => { setForm({ ...form, goods_id: e.target.value }); setErrors(prev => clearError(prev, 'goods_id')); }} error={errors.goods_id} />
+          <Input label="活动 ID" type="number" value={String(form.activity_id)} onChange={e => { setForm({ ...form, activity_id: Number(e.target.value) }); setErrors(prev => clearError(prev, 'activity_id')); }} error={errors.activity_id} />
         </div>
         <div className="flex justify-end gap-3 mt-6">
           <Button variant="secondary" onClick={() => setShowForm(false)}>取消</Button>

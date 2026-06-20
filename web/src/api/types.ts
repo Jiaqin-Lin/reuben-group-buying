@@ -180,6 +180,7 @@ export interface LockRequest {
   out_trade_no: string;
   team_id?: string;
   notify_url?: string;
+  buy_type?: 'group' | 'direct';
 }
 
 export interface LockResult {
@@ -253,4 +254,20 @@ export interface OrderFilter {
   end_date?: string;
   page?: number;
   page_size?: number;
+}
+
+// ===== Product listing (GET /api/v1/products) =====
+
+export interface ActivitySummary {
+  activity_id: number;
+  pay_price: string;
+  deduction_price: string;
+  target_count: number;
+}
+
+export interface ProductWithActivity {
+  goods_id: string;
+  goods_name: string;
+  original_price: string;
+  activity: ActivitySummary | null;
 }

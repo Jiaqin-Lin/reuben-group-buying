@@ -65,17 +65,21 @@ type LocalCache struct {
 	// Cache for ActivityWithDiscount (computed from activities + discounts)
 	// activityId → ActivityWithDiscount
 	awd map[int64]*ActivityWithDiscount
+
+	// goodsId → first active activityId（用于产品列表页展示活动摘要）
+	goodsToActivity map[string]int64
 }
 
 // New 创建本地缓存实例。
 func New(db *gorm.DB) *LocalCache {
 	return &LocalCache{
-		db:         db,
-		ap:         make(map[string]int64),
-		activities: make(map[int64]*model.Activity),
-		discounts:  make(map[string]*model.Discount),
-		products:   make(map[string]*model.Product),
-		awd:        make(map[int64]*ActivityWithDiscount),
+		db:              db,
+		ap:              make(map[string]int64),
+		activities:      make(map[int64]*model.Activity),
+		discounts:       make(map[string]*model.Discount),
+		products:        make(map[string]*model.Product),
+		awd:             make(map[int64]*ActivityWithDiscount),
+		goodsToActivity: make(map[string]int64),
 	}
 }
 
@@ -164,6 +168,16 @@ func (c *LocalCache) Load(ctx context.Context) error {
 		}
 	}
 
+	// 预计算 goodsId → 第一个活跃 activityId（产品列表用）
+	newGoodsToActivity := make(map[string]int64, len(aps))
+	for i := range aps {
+		if _, exists := newGoodsToActivity[aps[i].GoodsID]; !exists {
+			if _, ok := newActivities[aps[i].ActivityID]; ok {
+				newGoodsToActivity[aps[i].GoodsID] = aps[i].ActivityID
+			}
+		}
+	}
+
 	// 原子替换
 	c.mu.Lock()
 	c.ap = newAP
@@ -171,6 +185,7 @@ func (c *LocalCache) Load(ctx context.Context) error {
 	c.discounts = newDiscounts
 	c.products = newProducts
 	c.awd = newAWD
+	c.goodsToActivity = newGoodsToActivity
 	c.lastLoad = time.Now()
 	c.mu.Unlock()
 
@@ -210,6 +225,30 @@ func (c *LocalCache) GetProduct(goodsID string) (*model.Product, bool) {
 	defer c.mu.RUnlock()
 	p, ok := c.products[goodsID]
 	return p, ok
+}
+
+// GetAllProducts 返回所有商品（只读，调用方不可修改）。
+func (c *LocalCache) GetAllProducts() []*model.Product {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	result := make([]*model.Product, 0, len(c.products))
+	for _, p := range c.products {
+		result = append(result, p)
+	}
+	return result
+}
+
+// GetActivityForProduct 查商品关联的第一个活跃活动+折扣。
+// 返回 (ActivityWithDiscount, true) 表示命中，(nil, false) 表示该商品无活跃活动。
+func (c *LocalCache) GetActivityForProduct(goodsID string) (*ActivityWithDiscount, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	activityID, ok := c.goodsToActivity[goodsID]
+	if !ok {
+		return nil, false
+	}
+	awd, ok := c.awd[activityID]
+	return awd, ok
 }
 
 // GetActivity 查活动（不含折扣）。

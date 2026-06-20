@@ -12,6 +12,14 @@ import {
 } from '../../utils/configRegistry';
 import { getErrorMessage } from '../../utils/constants';
 
+/** Extract raw value from backend's { value: ... } wrapper. */
+function unwrap(val: unknown): unknown {
+  if (val && typeof val === 'object' && 'value' in (val as Record<string, unknown>)) {
+    return (val as Record<string, unknown>).value;
+  }
+  return val;
+}
+
 export function ConfigPage() {
   const { data: configs, isLoading, isError, refetch } = useAdminConfigs();
   const updateMutation = useUpdateConfig();
@@ -30,7 +38,8 @@ export function ConfigPage() {
     );
   }
 
-  const startEdit = (key: string, currentValue: unknown) => {
+  const startEdit = (key: string, rawValue: unknown) => {
+    const currentValue = unwrap(rawValue);
     setEditingKey(key);
     const def = getConfigDef(key);
     if (def?.type === 'bool') {
@@ -61,60 +70,66 @@ export function ConfigPage() {
     );
   };
 
-  const renderValueEditor = (key: string, currentValue: unknown) => {
+  const formatDisplayValue = (key: string, rawValue: unknown) => {
+    const val = unwrap(rawValue);
     const def = getConfigDef(key);
-    const isEditing = editingKey === key;
-
-    if (!isEditing) {
+    if (def?.type === 'bool') {
       return (
-        <span className="font-mono text-sm text-[var(--color-text-primary)]">
-          {def?.type === 'bool' ? (currentValue ? 'true' : 'false') : String(currentValue)}
-        </span>
+        <Badge variant={val ? 'success' : 'neutral'}>
+          {val ? 'true' : 'false'}
+        </Badge>
       );
     }
+    return (
+      <span className="font-mono text-sm text-[var(--color-text-primary)]">
+        {String(val)}
+      </span>
+    );
+  };
+
+  const renderEditor = (key: string) => {
+    const def = getConfigDef(key);
+    const isEditing = editingKey === key;
+    if (!isEditing) return null;
 
     if (def?.type === 'bool') {
       return (
-        <button
-          onClick={() => saveEdit(key)}
-          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors cursor-pointer ${
-            editValue ? 'bg-[#111]' : 'bg-[#EAEAEA]'
-          }`}
-        >
-          <span
-            className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${
-              editValue ? 'translate-x-6' : 'translate-x-1'
-            }`}
-          />
-        </button>
-      );
-    }
-
-    if (def?.type === 'int') {
-      return (
         <div className="flex items-center gap-2">
-          <input
-            type="number"
-            value={String(editValue ?? currentValue)}
-            onChange={(e) => setEditValue(Number(e.target.value))}
-            className="h-8 w-24 px-2 rounded-md border border-[#EAEAEA] text-sm font-mono focus:outline-none focus:border-[var(--color-accent)] focus:ring-1 focus:ring-[var(--color-accent-border)]"
-            autoFocus
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') saveEdit(key);
-              if (e.key === 'Escape') cancelEdit();
-            }}
-          />
-          <Button size="sm" onClick={() => saveEdit(key)} loading={updateMutation.isPending}>
-            保存
-          </Button>
-          <Button variant="ghost" size="sm" onClick={cancelEdit}>
-            取消
-          </Button>
+          <button
+            onClick={() => setEditValue(!editValue)}
+            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors cursor-pointer ${
+              editValue ? 'bg-[#111]' : 'bg-[#EAEAEA]'
+            }`}
+          >
+            <span
+              className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${
+                editValue ? 'translate-x-6' : 'translate-x-1'
+              }`}
+            />
+          </button>
+          <span className="text-xs text-[var(--color-text-muted)]">
+            {editValue ? 'true' : 'false'}
+          </span>
         </div>
       );
     }
 
-    return null;
+    return (
+      <input
+        type={def?.type === 'int' ? 'number' : 'text'}
+        value={String(editValue ?? '')}
+        onChange={(e) => {
+          const v = def?.type === 'int' ? Number(e.target.value) : e.target.value;
+          setEditValue(v);
+        }}
+        className="h-8 w-40 px-2 rounded-md border border-[#EAEAEA] text-sm font-mono focus:outline-none focus:border-[var(--color-accent)] focus:ring-1 focus:ring-[var(--color-accent-border)]"
+        autoFocus
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') saveEdit(key);
+          if (e.key === 'Escape') cancelEdit();
+        }}
+      />
+    );
   };
 
   const entries = configs ? Object.entries(configs) : [];
@@ -134,6 +149,7 @@ export function ConfigPage() {
         <div className="divide-y divide-[#EAEAEA]">
           {entries.map(([key, value]) => {
             const def = getConfigDef(key);
+            const isEditing = editingKey === key;
             return (
               <div
                 key={key}
@@ -156,15 +172,33 @@ export function ConfigPage() {
                 </div>
 
                 <div className="flex items-center gap-2 flex-shrink-0">
-                  {renderValueEditor(key, value)}
-                  {editingKey !== key && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => startEdit(key, value)}
-                    >
-                      编辑
-                    </Button>
+                  {/* Edit mode: show editor + save/cancel */}
+                  {isEditing ? (
+                    <>
+                      {renderEditor(key)}
+                      <Button
+                        size="sm"
+                        onClick={() => saveEdit(key)}
+                        loading={updateMutation.isPending}
+                      >
+                        保存
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={cancelEdit}>
+                        取消
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      {/* View mode: show value + edit button */}
+                      {formatDisplayValue(key, value)}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => startEdit(key, value)}
+                      >
+                        编辑
+                      </Button>
+                    </>
                   )}
                 </div>
               </div>

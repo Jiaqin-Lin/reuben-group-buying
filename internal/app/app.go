@@ -210,6 +210,7 @@ func New(cfg *config.Config) (*App, error) {
 	router.GET("/health", healthHandler(db, rdb, localCache))
 	router.GET("/metrics", metricsHandler())
 	router.GET("/ready", readyHandler(db, rdb))
+	router.GET("/api/v1/products", indexHandler.ListProducts)
 	router.POST("/api/v1/trial", indexHandler.Trial)
 	router.POST("/api/v1/trade/lock", tradeHandler.LockOrder)
 	router.POST("/api/v1/trade/settlement", tradeHandler.Settlement)

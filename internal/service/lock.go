@@ -65,13 +65,14 @@ func NewLockService(
 // LockRequest 锁单请求参数。
 type LockRequest struct {
 	UserID     string `json:"user_id" binding:"required"`
-	ActivityID int64  `json:"activity_id" binding:"required"`
+	ActivityID int64  `json:"activity_id"` // 拼团必填，直接购买填 0
 	GoodsID    string `json:"goods_id" binding:"required"`
-	Source     string `json:"source" binding:"required"`
-	Channel    string `json:"channel" binding:"required"`
+	Source     string `json:"source"`  // 直接购买时可选
+	Channel    string `json:"channel"` // 直接购买时可选
 	OutTradeNo string `json:"out_trade_no" binding:"required"`
 	TeamID     string `json:"team_id"`    // 可选，非空表示加入已有团
 	NotifyURL  string `json:"notify_url"` // 可选，成团回调地址
+	BuyType    string `json:"buy_type"`   // "group" | "direct"
 }
 
 // LockResult 锁单结果。
@@ -136,7 +137,33 @@ func (s *LockService) Lock(ctx context.Context, req LockRequest) (*LockResult, e
 		return existing, nil
 	}
 
-	// 4. 试算：定价 + 活动校验 + 人群标签（本地缓存命中，不查 Redis/DB）
+	// 4. 直接购买路径：不走试算/限购/名额/创团，直接按原价创建订单
+	if req.BuyType == "direct" {
+		result, err := s.lockDirectBuy(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+
+		// 创建支付单
+		if s.payGateway != nil && !dynamic.FeatureSkipPayment.Get() {
+			payURL, paymentErr := s.createPayment(ctx, result)
+			if paymentErr != nil {
+				slog.ErrorContext(ctx, "lock: direct buy create payment failed, rolling back",
+					"order_id", result.OrderID,
+					"error", paymentErr,
+				)
+				s.rollbackDirectBuy(ctx, result)
+				return nil, fmt.Errorf("create payment: %w", paymentErr)
+			}
+			result.PayURL = payURL
+		}
+
+		s.cacheResult(ctx, req.UserID, req.OutTradeNo, result)
+		slog.DebugContext(ctx, "lock: direct buy done", "user_id", req.UserID, "order_id", result.OrderID)
+		return result, nil
+	}
+
+	// 5. 试算：定价 + 活动校验 + 人群标签（本地缓存命中，不查 Redis/DB）
 	trialReq := TrialRequest{
 		UserID:  req.UserID,
 		GoodsID: req.GoodsID,
@@ -345,8 +372,57 @@ func (s *LockService) lockJoinTeam(ctx context.Context, req LockRequest, trial *
 	slog.InfoContext(ctx, "lock: joined team", "team_id", req.TeamID, "order_id", orderID, "user_id", req.UserID)
 	return buildLockResult(order, req.TeamID), nil
 }
+// lockDirectBuy 直接购买锁单——不走试算/限购/名额/创团，直接按原价建单。
+func (s *LockService) lockDirectBuy(ctx context.Context, req LockRequest) (*LockResult, error) {
+	// 查商品获取原价（优先本地缓存）
+	var originalPrice string
+	if s.localCache != nil {
+		if p, ok := s.localCache.GetProduct(req.GoodsID); ok {
+			originalPrice = p.OriginalPrice
+		}
+	}
+	if originalPrice == "" {
+		prod, err := s.trialSvc.productRepo.FindProductByGoodsID(ctx, req.GoodsID)
+		if err != nil {
+			return nil, &LockError{Code: errcode.CodeTrialFailed, Err: fmt.Errorf("direct buy: product %s not found: %w", req.GoodsID, err)}
+		}
+		originalPrice = prod.OriginalPrice
+	}
 
-// --- 辅助函数 ---
+	orderID := generateNumericID(12)
+
+	order := &model.Order{
+		UserID:         req.UserID,
+		TeamID:         "", // 直接购买无团
+		OrderID:        orderID,
+		ActivityID:     0, // 直接购买无活动
+		GoodsID:        req.GoodsID,
+		Source:         req.Source,
+		Channel:        req.Channel,
+		OriginalPrice:  originalPrice,
+		DeductionPrice: "0.00",
+		PayPrice:       originalPrice,
+		Status:         model.OrderStatusLocked,
+		OutTradeNo:     req.OutTradeNo,
+	}
+
+	if err := s.orderRepo.CreateDirectOrder(ctx, order); err != nil {
+		return nil, fmt.Errorf("lock: create direct order: %w", err)
+	}
+
+	slog.InfoContext(ctx, "lock: direct buy order created", "order_id", orderID, "user_id", req.UserID, "goods_id", req.GoodsID)
+	return buildLockResult(order, ""), nil
+}
+
+// rollbackDirectBuy 直接购买支付创建失败时的补偿回滚。
+func (s *LockService) rollbackDirectBuy(ctx context.Context, result *LockResult) {
+	if err := s.orderRepo.DeleteOrder(ctx, result.OrderID); err != nil {
+		slog.WarnContext(ctx, "lock rollback: delete direct order failed",
+			"order_id", result.OrderID,
+			"error", err,
+		)
+	}
+}
 
 // rollbackLock 支付创建失败时回滚已提交的锁单。
 //

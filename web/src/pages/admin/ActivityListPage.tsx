@@ -11,7 +11,7 @@ import { Loading } from '../../components/ui/Loading';
 import { ErrorState } from '../../components/ui/ErrorState';
 import { useToast } from '../../context/ToastContext';
 import { getErrorMessage } from '../../utils/constants';
-import { required, isPositiveInt, minValue, dateRange, validateForm, type FieldErrors } from '../../utils/validate';
+import { required, isPositiveInt, minValue, dateRange, clearError, validateForm, type FieldErrors } from '../../utils/validate';
 import type { Activity } from '../../api/types';
 
 const STATUS_OPTS = [
@@ -100,7 +100,9 @@ export function ActivityListPage() {
     ]);
     if (Object.keys(errs).length > 0) { setErrors(errs); return; }
 
-    const payload = { ...form, target_count: Number(form.target_count), take_limit: Number(form.take_limit), valid_minutes: Number(form.valid_minutes), group_type: Number(form.group_type), status: Number(form.status), tag_id: form.tag_id || undefined, tag_scope: form.tag_scope || undefined };
+    // datetime-local → RFC3339: "2026-06-21T02:20" → "2026-06-21T02:20:00+08:00"
+    const toRFC3339 = (v: string) => v ? v + ':00+08:00' : undefined;
+    const payload = { ...form, target_count: Number(form.target_count), take_limit: Number(form.take_limit), valid_minutes: Number(form.valid_minutes), group_type: Number(form.group_type), status: Number(form.status), start_time: toRFC3339(form.start_time), end_time: toRFC3339(form.end_time), tag_id: form.tag_id || undefined, tag_scope: form.tag_scope || undefined };
     if (editing) {
       updateMut.mutate({ id: editing.activity_id, data: payload });
     } else {
@@ -127,6 +129,9 @@ export function ActivityListPage() {
               <th className="h-10 px-4 text-xs font-medium text-[var(--color-text-secondary)] text-left uppercase">折扣</th>
               <th className="h-10 px-4 text-xs font-medium text-[var(--color-text-secondary)] text-left uppercase">成团人数</th>
               <th className="h-10 px-4 text-xs font-medium text-[var(--color-text-secondary)] text-left uppercase">限购</th>
+              <th className="h-10 px-4 text-xs font-medium text-[var(--color-text-secondary)] text-left uppercase">有效(分)</th>
+              <th className="h-10 px-4 text-xs font-medium text-[var(--color-text-secondary)] text-left uppercase">开始时间</th>
+              <th className="h-10 px-4 text-xs font-medium text-[var(--color-text-secondary)] text-left uppercase">结束时间</th>
               <th className="h-10 px-4 text-xs font-medium text-[var(--color-text-secondary)] text-left uppercase">状态</th>
               <th className="h-10 px-4 text-xs font-medium text-[var(--color-text-secondary)] text-left uppercase">操作</th>
             </tr>
@@ -141,6 +146,9 @@ export function ActivityListPage() {
                 <td className="px-4 py-3 text-sm font-mono">{a.discount_id}</td>
                 <td className="px-4 py-3 text-sm">{a.target_count}人</td>
                 <td className="px-4 py-3 text-sm">{a.take_limit}次</td>
+                <td className="px-4 py-3 text-sm">{a.valid_minutes}分</td>
+                <td className="px-4 py-3 text-xs font-mono text-[var(--color-text-secondary)]">{a.start_time?.slice(0, 16) || '-'}</td>
+                <td className="px-4 py-3 text-xs font-mono text-[var(--color-text-secondary)]">{a.end_time?.slice(0, 16) || '-'}</td>
                 <td className="px-4 py-3"><StatusBadge type="activity" status={a.status} /></td>
                 <td className="px-4 py-3">
                   <div className="flex gap-2">
@@ -158,14 +166,14 @@ export function ActivityListPage() {
         <div className="grid grid-cols-2 gap-4">
           <Input label="活动 ID" type="number" value={String(form.activity_id)} onChange={e => setForm({ ...form, activity_id: Number(e.target.value) })} disabled={!!editing} />
           <Input label="名称" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} error={errors.name} />
-          <Input label="折扣 ID" value={form.discount_id} onChange={e => { setForm({ ...form, discount_id: e.target.value }); setErrors(prev => ({ ...prev, discount_id: '' })); }} error={errors.discount_id} />
-          <Select label="拼团类型" options={[{ value: 0, label: '自动' }, { value: 1, label: '目标' }]} value={form.group_type} onChange={e => setForm({ ...form, group_type: Number(e.target.value) })} />
-          <Input label="目标人数" type="number" value={String(form.target_count)} onChange={e => { setForm({ ...form, target_count: Number(e.target.value) }); setErrors(prev => ({ ...prev, target_count: '' })); }} error={errors.target_count} />
-          <Input label="限购次数" type="number" value={String(form.take_limit)} onChange={e => { setForm({ ...form, take_limit: Number(e.target.value) }); setErrors(prev => ({ ...prev, take_limit: '' })); }} error={errors.take_limit} />
-          <Input label="有效分钟" type="number" value={String(form.valid_minutes)} onChange={e => { setForm({ ...form, valid_minutes: Number(e.target.value) }); setErrors(prev => ({ ...prev, valid_minutes: '' })); }} error={errors.valid_minutes} />
-          <Select label="状态" options={STATUS_OPTS} value={form.status} onChange={e => setForm({ ...form, status: Number(e.target.value) })} />
-          <Input label="开始时间" type="datetime-local" value={form.start_time} onChange={e => { setForm({ ...form, start_time: e.target.value }); setErrors(prev => ({ ...prev, start_time: '', end_time: '' })); }} error={errors.start_time} />
-          <Input label="结束时间" type="datetime-local" value={form.end_time} onChange={e => { setForm({ ...form, end_time: e.target.value }); setErrors(prev => ({ ...prev, end_time: '' })); }} error={errors.end_time} />
+          <Input label="折扣 ID" value={form.discount_id} onChange={e => { setForm({ ...form, discount_id: e.target.value }); setErrors(prev => clearError(prev, 'discount_id')); }} error={errors.discount_id} />
+          <Select label="拼团类型" options={[{ value: 0, label: '自动成团' }, { value: 1, label: '目标拼团' }]} value={form.group_type} onChange={e => setForm({ ...form, group_type: Number(e.target.value) })} />
+          <Input label="目标人数" type="number" value={String(form.target_count)} onChange={e => { setForm({ ...form, target_count: Number(e.target.value) }); setErrors(prev => clearError(prev, 'target_count')); }} error={errors.target_count} />
+          <Input label="限购次数" type="number" value={String(form.take_limit)} onChange={e => { setForm({ ...form, take_limit: Number(e.target.value) }); setErrors(prev => clearError(prev, 'take_limit')); }} error={errors.take_limit} />
+          <Input label="有效分钟" type="number" value={String(form.valid_minutes)} onChange={e => { setForm({ ...form, valid_minutes: Number(e.target.value) }); setErrors(prev => clearError(prev, 'valid_minutes')); }} error={errors.valid_minutes} />
+          {editing && <Select label="状态" options={STATUS_OPTS} value={form.status} onChange={e => setForm({ ...form, status: Number(e.target.value) })} />}
+          <Input label="开始时间" type="datetime-local" value={form.start_time} onChange={e => { setForm({ ...form, start_time: e.target.value }); setErrors(prev => clearError(clearError(prev, 'start_time'), 'end_time')); }} error={errors.start_time} />
+          <Input label="结束时间" type="datetime-local" value={form.end_time} onChange={e => { setForm({ ...form, end_time: e.target.value }); setErrors(prev => clearError(prev, 'end_time')); }} error={errors.end_time} />
           <Input label="人群标签 ID" value={form.tag_id} onChange={e => setForm({ ...form, tag_id: e.target.value })} placeholder="可选" />
           <Input label="标签范围" value={form.tag_scope} onChange={e => setForm({ ...form, tag_scope: e.target.value })} placeholder="可选" />
         </div>

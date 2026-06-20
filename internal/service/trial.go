@@ -362,6 +362,83 @@ func checkUserInCrowd(ctx context.Context, crowdRepo repository.CrowdRepository,
 	return crowdRepo.IsUserInCrowd(ctx, tagID, userID)
 }
 
+// ProductWithActivity 产品列表项——商品 + 可选活动摘要。
+type ProductWithActivity struct {
+	GoodsID       string           `json:"goods_id"`
+	GoodsName     string           `json:"goods_name"`
+	OriginalPrice string           `json:"original_price"`
+	Activity      *ActivitySummary `json:"activity,omitempty"`
+}
+
+// ActivitySummary 活动摘要（产品列表中展示）。
+type ActivitySummary struct {
+	ActivityID     int64  `json:"activity_id"`
+	PayPrice       string `json:"pay_price"`
+	DeductionPrice string `json:"deduction_price"`
+	TargetCount    int    `json:"target_count"`
+}
+
+// ListProductsWithActivity 列出所有商品，附带第一个匹配的活跃活动。
+//
+// 纯从 LocalCache 读取，不走 DB。缓存 miss 时 fallback DB 查产品，
+// 此时该商品返回 activity=nil。
+func (s *TrialService) ListProductsWithActivity(ctx context.Context) ([]ProductWithActivity, error) {
+	var products []*model.Product
+	if s.localCache != nil {
+		products = s.localCache.GetAllProducts()
+	}
+
+	// 缓存尚未加载（极小概率），fallback DB
+	if len(products) == 0 {
+		dbProducts, err := s.productRepo.FindAllProducts(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("list products: %w", err)
+		}
+		result := make([]ProductWithActivity, len(dbProducts))
+		for i, p := range dbProducts {
+			result[i] = ProductWithActivity{
+				GoodsID:       p.GoodsID,
+				GoodsName:     p.GoodsName,
+				OriginalPrice: p.OriginalPrice,
+			}
+		}
+		return result, nil
+	}
+
+	result := make([]ProductWithActivity, 0, len(products))
+	for _, p := range products {
+		item := ProductWithActivity{
+			GoodsID:       p.GoodsID,
+			GoodsName:     p.GoodsName,
+			OriginalPrice: p.OriginalPrice,
+		}
+
+		// 查第一个活跃活动
+		if s.localCache != nil {
+			if awd, ok := s.localCache.GetActivityForProduct(p.GoodsID); ok {
+				// 人群标签折扣在列表页无法判定用户归属，不展示活动
+				if awd.Discount.DiscountType != model.DiscountTypeTag {
+					originalPrice, decErr := decimal.NewFromString(p.OriginalPrice)
+					if decErr == nil {
+						payPrice, calcErr := calculatePayPrice(ctx, originalPrice, awd.Discount, "", nil, nil)
+						if calcErr == nil {
+							deductionPrice := originalPrice.Sub(payPrice)
+							item.Activity = &ActivitySummary{
+								ActivityID:     awd.Activity.ActivityID,
+								PayPrice:       payPrice.StringFixed(2),
+								DeductionPrice: deductionPrice.StringFixed(2),
+								TargetCount:    awd.Activity.TargetCount,
+							}
+						}
+					}
+				}
+			}
+		}
+		result = append(result, item)
+	}
+	return result, nil
+}
+
 // TrialError 试算业务错误。
 type TrialError struct {
 	Code string

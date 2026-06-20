@@ -33,7 +33,7 @@ func (h *AdminDashboardHandler) GetDashboard(c *gin.Context) {
 		slog.Error("dashboard: query failed", "error", err)
 	}
 	if err := h.db.WithContext(ctx).Table("teams").
-		Where("status = 1").Count(&completeTeams).Error; err != nil {
+		Where("status IN (1, 3)").Count(&completeTeams).Error; err != nil {
 		slog.Error("dashboard: query failed", "error", err)
 	}
 	if err := h.db.WithContext(ctx).Table("teams").

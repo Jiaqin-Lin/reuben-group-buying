@@ -98,6 +98,25 @@ func (h *IndexHandler) ListTeams(c *gin.Context) {
 	})
 }
 
+// ListProducts 用户端产品列表 — GET /api/v1/products。
+//
+// 返回所有商品，每个商品附带第一个匹配的活跃活动摘要（可能为 null）。
+// 响应：{ "products": [{ goods_id, goods_name, original_price, activity: {...} | null }] }
+func (h *IndexHandler) ListProducts(c *gin.Context) {
+	products, err := h.trialService.ListProductsWithActivity(c.Request.Context())
+	if err != nil {
+		slog.ErrorContext(c.Request.Context(), "list products failed", "error", err)
+		response.Fail(c, errcode.CodeUnknownErr)
+		return
+	}
+
+	if products == nil {
+		products = []service.ProductWithActivity{}
+	}
+
+	response.Success(c, gin.H{"products": products})
+}
+
 // GetTeam 用户端团详情 — GET /api/v1/teams/:team_id。
 //
 // 返回 team 信息 + 团内订单列表（成员）。

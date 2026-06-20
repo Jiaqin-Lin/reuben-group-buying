@@ -9,7 +9,7 @@ import { Loading } from '../../components/ui/Loading';
 import { ErrorState } from '../../components/ui/ErrorState';
 import { useToast } from '../../context/ToastContext';
 import { getErrorMessage } from '../../utils/constants';
-import { required, validateForm, type FieldErrors } from '../../utils/validate';
+import { required, clearError, validateForm, type FieldErrors } from '../../utils/validate';
 import type { CrowdTag, CrowdTagDetail } from '../../api/types';
 
 const emptyForm = { tag_id: '', tag_name: '', tag_desc: '' };
@@ -91,6 +91,7 @@ export function CrowdTagPage() {
               <tr className="bg-[var(--color-canvas)] border-b border-[#EAEAEA]">
                 <th className="h-10 px-4 text-xs font-medium text-[var(--color-text-secondary)] text-left uppercase">标签 ID</th>
                 <th className="h-10 px-4 text-xs font-medium text-[var(--color-text-secondary)] text-left uppercase">名称</th>
+                <th className="h-10 px-4 text-xs font-medium text-[var(--color-text-secondary)] text-left uppercase">描述</th>
                 <th className="h-10 px-4 text-xs font-medium text-[var(--color-text-secondary)] text-left uppercase">人数</th>
                 <th className="h-10 px-4 text-xs font-medium text-[var(--color-text-secondary)] text-left uppercase">操作</th>
               </tr>
@@ -100,6 +101,7 @@ export function CrowdTagPage() {
                 <tr key={t.tag_id} className={`border-b border-[#EAEAEA] last:border-0 cursor-pointer ${selectedTag === t.tag_id ? 'bg-[var(--color-canvas)]' : ''}`} onClick={() => setSelectedTag(t.tag_id)}>
                   <td className="px-4 py-3 text-sm font-mono">{t.tag_id}</td>
                   <td className="px-4 py-3 text-sm">{t.tag_name}</td>
+                  <td className="px-4 py-3 text-xs text-[var(--color-text-secondary)] max-w-[160px] truncate" title={t.tag_desc}>{t.tag_desc || '-'}</td>
                   <td className="px-4 py-3 text-sm">{t.statistics}</td>
                   <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
                     <div className="flex gap-2">
@@ -151,7 +153,7 @@ export function CrowdTagPage() {
 
       <Modal open={showForm} onClose={() => setShowForm(false)} title={editing ? '编辑标签' : '新建标签'}>
         <div className="flex flex-col gap-4">
-          <Input label="标签 ID" value={form.tag_id} onChange={e => { setForm({ ...form, tag_id: e.target.value }); setErrors(prev => ({ ...prev, tag_id: '' })); }} disabled={!!editing} error={errors.tag_id} />
+          <Input label="标签 ID" value={form.tag_id} onChange={e => { setForm({ ...form, tag_id: e.target.value }); setErrors(prev => clearError(prev, 'tag_id')); }} disabled={!!editing} error={errors.tag_id} />
           <Input label="名称" value={form.tag_name} onChange={e => setForm({ ...form, tag_name: e.target.value })} error={errors.tag_name} />
           <Input label="描述" value={form.tag_desc} onChange={e => setForm({ ...form, tag_desc: e.target.value })} />
         </div>

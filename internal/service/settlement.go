@@ -105,6 +105,22 @@ func (s *SettlementService) Settle(ctx context.Context, req SettlementRequest) (
 		return nil, &SettlementError{Code: errcode.CodeOrderNotFound, Err: fmt.Errorf("order status is %d, expected %d", order.Status, model.OrderStatusLocked)}
 	}
 
+	// 3b. 直接购买订单：无需团/活动/限购，直接标记已支付
+	if order.TeamID == "" {
+		if err := s.orderRepo.UpdateOrderStatusWithCheck(ctx, order.OrderID, model.OrderStatusLocked, model.OrderStatusPaid); err != nil {
+			return nil, fmt.Errorf("settlement direct: update order: %w", err)
+		}
+		slog.InfoContext(ctx, "settlement: direct buy done", "order_id", order.OrderID, "user_id", req.UserID)
+		return &SettlementResult{
+			OrderID:    order.OrderID,
+			OutTradeNo: req.OutTradeNo,
+			TeamID:     "",
+			ActivityID: 0,
+			IsComplete: false,
+			TakeCount:  0,
+		}, nil
+	}
+
 	// 4. 查团并校验
 	team, err := s.orderRepo.FindTeamByID(ctx, order.TeamID)
 	if err != nil {
