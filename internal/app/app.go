@@ -16,8 +16,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-
+	goredis "github.com/redis/go-redis/v9"
 	"github.com/robfig/cron/v3"
+	"gorm.io/gorm"
 
 	"github.com/reuben/group-buying/internal/cache"
 	"github.com/reuben/group-buying/internal/config"
@@ -45,6 +46,8 @@ type App struct {
 	timeoutSvc *service.TimeoutService
 	dynMgr     *dynamic.Manager
 	localCache *cache.LocalCache
+	ctx        context.Context    // app 级 context，cron job 和 shutdown 使用
+	cancel     context.CancelFunc // 触发 graceful shutdown 时 cancel
 }
 
 // metrics 全局计数器（atomic，无锁）。
@@ -221,6 +224,10 @@ func New(cfg *config.Config) (*App, error) {
 
 // Run 启动 HTTP 服务、定时任务，并等待退出信号。
 func (a *App) Run() error {
+	// 创建 app 级 context，cron job 和 shutdown 共用
+	a.ctx, a.cancel = context.WithCancel(context.Background())
+	defer a.cancel()
+
 	// 启动动态配置 Watch（Redis Pub/Sub）
 	a.dynMgr.Watch(context.Background())
 	defer a.dynMgr.Stop()
@@ -234,13 +241,12 @@ func (a *App) Run() error {
 		}
 	}()
 
-	// 启动定时任务
+	// 启动定时任务（使用 app 级 ctx，shutdown 时 cancel 可中断正在运行的 job）
 	c := cron.New()
 
 	// 每 15s 扫描待发送的回调通知
 	_, err := c.AddFunc("@every 15s", func() {
-		ctx := context.Background()
-		if err := a.notifySvc.ExecPendingTasks(ctx); err != nil {
+		if err := a.notifySvc.ExecPendingTasks(a.ctx); err != nil {
 			a.logger.Error("notify cron job failed", "error", err)
 		}
 	})
@@ -251,8 +257,7 @@ func (a *App) Run() error {
 	// 超时退单扫描
 	timeoutSpec := fmt.Sprintf("@every %ds", a.cfg.App.TimeoutScanInterval)
 	_, err = c.AddFunc(timeoutSpec, func() {
-		ctx := context.Background()
-		scanned, refunded, failed, scanErr := a.timeoutSvc.ScanAndRefund(ctx)
+		scanned, refunded, failed, scanErr := a.timeoutSvc.ScanAndRefund(a.ctx)
 		if scanErr != nil {
 			a.logger.Error("timeout scan cron failed", "error", scanErr)
 		} else if scanned > 0 {
@@ -265,8 +270,7 @@ func (a *App) Run() error {
 
 	// 本地缓存定时刷新（每 5 分钟）
 	_, err = c.AddFunc("@every 300s", func() {
-		ctx := context.Background()
-		if err := a.localCache.Load(ctx); err != nil {
+		if err := a.localCache.Load(a.ctx); err != nil {
 			a.logger.Error("local cache refresh failed", "error", err)
 		}
 	})
@@ -285,8 +289,13 @@ func (a *App) Run() error {
 
 	a.logger.Info("server shutting down")
 
+	// 1. 先 cancel app context → 正在运行的 cron job 收到 ctx.Done() 尽快退出
+	a.cancel()
+
+	// 2. 停止 cron scheduler（等待正在运行的 job 完成）
 	cronCtx := c.Stop()
 
+	// 3. HTTP server graceful shutdown（10s 超时）
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -295,6 +304,7 @@ func (a *App) Run() error {
 		return err
 	}
 
+	// 4. 等待 cron job 全部完成
 	<-cronCtx.Done()
 
 	a.logger.Info("server stopped")
@@ -302,22 +312,83 @@ func (a *App) Run() error {
 }
 
 // healthHandler 健康检查，验证 MySQL、Redis 和本地缓存。
-func healthHandler(db, rdb, lc any) gin.HandlerFunc {
+func healthHandler(db *gorm.DB, rdb *goredis.Client, lc *cache.LocalCache) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		ctx := c.Request.Context()
 		status := "ok"
+		httpStatus := http.StatusOK
 		details := gin.H{
 			"mysql": "ok",
 			"redis": "ok",
 			"cache": "ok",
 			"time":  time.Now().Format(time.RFC3339),
 		}
-		c.JSON(http.StatusOK, gin.H{"status": status, "details": details})
+
+		// Ping MySQL
+		sqlDB, err := db.DB()
+		if err != nil {
+			details["mysql"] = "error"
+			status = "degraded"
+		} else if err := sqlDB.PingContext(ctx); err != nil {
+			details["mysql"] = fmt.Sprintf("error: %v", err)
+			status = "degraded"
+		}
+
+		// Ping Redis
+		if err := rdb.Ping(ctx).Err(); err != nil {
+			details["redis"] = fmt.Sprintf("error: %v", err)
+			status = "degraded"
+		}
+
+		// 检查本地缓存是否已加载（activities > 0 表示已加载）
+		stats := lc.Stats()
+		if stats.Activities == 0 {
+			details["cache"] = "stale (no data loaded)"
+			status = "degraded"
+		}
+
+		if status != "ok" {
+			httpStatus = http.StatusServiceUnavailable
+		}
+		c.JSON(httpStatus, gin.H{"status": status, "details": details})
 	}
 }
 
 // readyHandler 就绪检查，只有 MySQL 和 Redis 都连通才返回 200。
-func readyHandler(db, rdb any) gin.HandlerFunc {
+// K8s readinessProbe 用此端点：不通过则摘除 Pod，防止流量打到不可用实例。
+func readyHandler(db *gorm.DB, rdb *goredis.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		ctx := c.Request.Context()
+
+		// MySQL must be reachable
+		sqlDB, err := db.DB()
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"status": "not ready",
+				"reason": fmt.Sprintf("mysql connection pool: %v", err),
+				"time":   time.Now().Format(time.RFC3339),
+			})
+			return
+		}
+		if err := sqlDB.PingContext(ctx); err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"status": "not ready",
+				"reason": fmt.Sprintf("mysql unreachable: %v", err),
+				"time":   time.Now().Format(time.RFC3339),
+			})
+			return
+		}
+
+		// Redis must be reachable
+		if err := rdb.Ping(ctx).Err(); err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"status": "not ready",
+				"reason": fmt.Sprintf("redis unreachable: %v", err),
+				"time":   time.Now().Format(time.RFC3339),
+			})
+			return
+		}
+
 		c.JSON(http.StatusOK, gin.H{"status": "ready", "time": time.Now().Format(time.RFC3339)})
 	}
 }

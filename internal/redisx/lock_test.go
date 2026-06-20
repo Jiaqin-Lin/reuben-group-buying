@@ -11,15 +11,20 @@ func TestAcquireLock_Success(t *testing.T) {
 	ctx, cancel := newTestContext()
 	defer cancel()
 
-	token, acquired, err := AcquireLock(ctx, testRDB, "test:lock:1", 5*time.Second)
+	lock, acquired, err := AcquireLock(ctx, testRDB, "test:lock:1", 5*time.Second)
 	if err != nil {
 		t.Fatalf("AcquireLock: %v", err)
 	}
 	if !acquired {
 		t.Error("expected lock acquired")
 	}
-	if token == "" {
-		t.Error("expected non-empty token")
+	if lock == nil {
+		t.Error("expected non-nil lock")
+	}
+
+	// Safe release
+	if err := lock.Release(ctx); err != nil {
+		t.Errorf("Release: %v", err)
 	}
 }
 
@@ -29,10 +34,11 @@ func TestAcquireLock_AlreadyHeld(t *testing.T) {
 	defer cancel()
 
 	// 第一次获取成功
-	_, acquired1, _ := AcquireLock(ctx, testRDB, "test:lock:2", 5*time.Second)
+	lock1, acquired1, _ := AcquireLock(ctx, testRDB, "test:lock:2", 5*time.Second)
 	if !acquired1 {
 		t.Fatal("first acquire should succeed")
 	}
+	defer lock1.Release(ctx)
 
 	// 第二次获取失败（锁被持有）
 	_, acquired2, err := AcquireLock(ctx, testRDB, "test:lock:2", 5*time.Second)
@@ -44,61 +50,52 @@ func TestAcquireLock_AlreadyHeld(t *testing.T) {
 	}
 }
 
-func TestReleaseLock_WrongToken(t *testing.T) {
+func TestAcquireLock_ReleaseAndReacquire(t *testing.T) {
 	flushTestDB(t)
 	ctx, cancel := newTestContext()
 	defer cancel()
 
-	token, acquired, _ := AcquireLock(ctx, testRDB, "test:lock:3", 5*time.Second)
+	lock1, acquired, _ := AcquireLock(ctx, testRDB, "test:lock:3", 5*time.Second)
 	if !acquired {
-		t.Fatal("acquire should succeed")
+		t.Fatal("first acquire should succeed")
 	}
 
-	// 用错误 token 释放 → 不应该删除 key
-	err := ReleaseLock(ctx, testRDB, "test:lock:3", "wrong-token")
-	if err != nil {
-		t.Fatalf("ReleaseLock wrong token: %v", err)
+	// 释放
+	if err := lock1.Release(ctx); err != nil {
+		t.Fatalf("Release: %v", err)
 	}
-
-	// 锁应该还在
-	_, acquired2, _ := AcquireLock(ctx, testRDB, "test:lock:3", 5*time.Second)
-	if acquired2 {
-		t.Error("lock should still be held after wrong-token release")
-	}
-
-	// 用正确 token 释放
-	ReleaseLock(ctx, testRDB, "test:lock:3", token)
 
 	// 现在可以重新获取
-	_, acquired3, _ := AcquireLock(ctx, testRDB, "test:lock:3", 5*time.Second)
-	if !acquired3 {
-		t.Error("lock should be acquirable after correct-token release")
+	lock2, acquired2, _ := AcquireLock(ctx, testRDB, "test:lock:3", 5*time.Second)
+	if !acquired2 {
+		t.Error("lock should be acquirable after release")
+	}
+	if lock2 != nil {
+		lock2.Release(ctx)
 	}
 }
 
-func TestReleaseLock_AfterExpiry(t *testing.T) {
+func TestAcquireLock_AfterExpiry(t *testing.T) {
 	flushTestDB(t)
 	ctx, cancel := newTestContext()
 	defer cancel()
 
-	token, acquired, _ := AcquireLock(ctx, testRDB, "test:lock:4", 1*time.Second)
+	lock, acquired, _ := AcquireLock(ctx, testRDB, "test:lock:4", 1*time.Second)
 	if !acquired {
 		t.Fatal("acquire should succeed")
 	}
+	defer lock.Release(ctx)
 
 	// 等待锁过期
 	time.Sleep(1200 * time.Millisecond)
 
-	// 释放已过期的锁 → 不报错（key 不存在，Lua 返回 0）
-	err := ReleaseLock(ctx, testRDB, "test:lock:4", token)
-	if err != nil {
-		t.Fatalf("ReleaseLock after expiry: %v", err)
-	}
-
-	// 新请求可以获取锁
-	_, acquired2, _ := AcquireLock(ctx, testRDB, "test:lock:4", 5*time.Second)
+	// 新请求可以获取锁（旧锁已过期）
+	lock2, acquired2, _ := AcquireLock(ctx, testRDB, "test:lock:4", 5*time.Second)
 	if !acquired2 {
 		t.Error("lock should be acquirable after expiry")
+	}
+	if lock2 != nil {
+		lock2.Release(ctx)
 	}
 }
 
@@ -116,7 +113,7 @@ func TestAcquireLock_Concurrency(t *testing.T) {
 			defer wg.Done()
 			ctx, cancel := newTestContext()
 			defer cancel()
-			_, acquired, err := AcquireLock(ctx, testRDB, "test:lock:concurrent", 5*time.Second)
+			lock, acquired, err := AcquireLock(ctx, testRDB, "test:lock:concurrent", 5*time.Second)
 			if err != nil {
 				t.Errorf("goroutine: %v", err)
 				return
@@ -125,6 +122,7 @@ func TestAcquireLock_Concurrency(t *testing.T) {
 				mu.Lock()
 				successCount++
 				mu.Unlock()
+				lock.Release(ctx)
 			}
 		}()
 	}
@@ -135,25 +133,40 @@ func TestAcquireLock_Concurrency(t *testing.T) {
 	}
 }
 
-func TestAcquireLockSimple(t *testing.T) {
+func TestAcquireLockWithExtend(t *testing.T) {
 	flushTestDB(t)
 	ctx, cancel := newTestContext()
 	defer cancel()
 
-	acquired, err := AcquireLockSimple(ctx, testRDB, "test:lock:simple", 5*time.Second)
+	// Acquire with auto-extend (short TTL for testing)
+	lock, acquired, err := AcquireLockWithExtend(ctx, testRDB, "test:lock:extend", 2*time.Second)
 	if err != nil {
-		t.Fatalf("AcquireLockSimple: %v", err)
+		t.Fatalf("AcquireLockWithExtend: %v", err)
 	}
 	if !acquired {
-		t.Error("expected lock acquired")
+		t.Fatal("expected lock acquired")
 	}
 
-	// ReleaseLockSimple 直接删除
-	ReleaseLockSimple(ctx, testRDB, "test:lock:simple")
+	// Wait longer than the original TTL — watch-dog should have extended it
+	time.Sleep(3 * time.Second)
 
-	// 确认已释放
-	acquired2, _ := AcquireLockSimple(ctx, testRDB, "test:lock:simple", 5*time.Second)
-	if !acquired2 {
-		t.Error("expected lock re-acquirable after simple release")
+	// Lock should still be held (watch-dog extended it)
+	_, acquired2, _ := AcquireLock(ctx, testRDB, "test:lock:extend", 1*time.Second)
+	if acquired2 {
+		t.Error("lock should still be held after watch-dog extend")
+	}
+
+	// Release should stop watch-dog and release
+	if err := lock.Release(ctx); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+
+	// Now should be acquirable
+	lock2, acquired3, _ := AcquireLock(ctx, testRDB, "test:lock:extend", 5*time.Second)
+	if !acquired3 {
+		t.Error("lock should be acquirable after release")
+	}
+	if lock2 != nil {
+		lock2.Release(ctx)
 	}
 }

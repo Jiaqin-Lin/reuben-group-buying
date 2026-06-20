@@ -2,107 +2,114 @@ package redisx
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
+
+	"github.com/bsm/redislock"
 )
 
-// releaseLockScript 安全释放锁的 Lua 脚本。
-// 只有锁的持有者（持有相同 token）才能释放，防止误删他人的锁。
-const releaseLockScript = `
-if redis.call('GET', KEYS[1]) == ARGV[1] then
-  return redis.call('DEL', KEYS[1])
-else
-  return 0
-end
-`
-
-var releaseLockLua = goredis.NewScript(releaseLockScript)
-
-// AcquireLock 获取分布式锁。
+// Lock wraps a redislock.Lock with optional watch-dog auto-extend.
 //
-// 实现: SET key token NX EX ttl
-//   - NX: 仅当 key 不存在时才设置（互斥）
-//   - EX: 设置过期时间（防死锁）
+// Acquired via AcquireLock (fixed TTL) or AcquireLockWithExtend (auto-extend).
+// Release must be called to safely release the lock (Lua script checks token ownership).
 //
-// 返回:
-//   - token: 随机令牌，释放锁时必须提供，防止误删他人锁
-//   - acquired: true 表示获取成功
-//
-// 设计说明:
-//
-//	不用 Redisson watch-dog 自动续期。锁粒度是 (userId, outTradeNo)，
-//	仅防同一外部单号并发。即使锁提前过期，outTradeNo 唯一索引 +
-//	幂等缓存提供兜底保护。固定 TTL 更简单，没有续期失败的风险。
-func AcquireLock(ctx context.Context, rdb *goredis.Client, key string, ttl time.Duration) (token string, acquired bool, err error) {
-	token, err = generateLockToken()
-	if err != nil {
-		return "", false, fmt.Errorf("acquire lock: %w", err)
-	}
-
-	ttlSec := ttl.Seconds()
-	if ttlSec < 1 {
-		ttlSec = 1
-	}
-
-	ok, err := rdb.SetNX(ctx, key, token, time.Duration(ttlSec)*time.Second).Result()
-	if err != nil {
-		return "", false, fmt.Errorf("acquire lock: %w", err)
-	}
-
-	return token, ok, nil
+// Uses bsm/redislock under the hood for:
+//   - Token-based safe release (Lua script: GET + DEL if match)
+//   - Optional watch-dog auto-extend (Redisson-style)
+//   - No dependency on SETNX directly
+type Lock struct {
+	inner  *redislock.Lock
+	key    string
+	cancel context.CancelFunc // stops auto-extend goroutine
 }
 
-// ReleaseLock 释放分布式锁（安全释放）。
+// Key returns the Redis key of this lock.
+func (l *Lock) Key() string { return l.key }
+
+// Release safely releases the lock.
 //
-// 用 Lua 脚本原子检查 token 再删除:
-//
-//	if redis.call('GET', KEYS[1]) == ARGV[1] then
-//	  return redis.call('DEL', KEYS[1])
-//	end
-//
-// 只有锁的持有者才能释放，防止误删。
-func ReleaseLock(ctx context.Context, rdb *goredis.Client, key, token string) error {
-	_, err := releaseLockLua.Run(ctx, rdb, []string{key}, token).Result()
-	if err != nil {
-		return fmt.Errorf("release lock: %w", err)
+// If auto-extend is active, the watch-dog goroutine is stopped first.
+// The actual release uses a Lua script that checks the token before deleting,
+// preventing accidental release of locks held by other processes.
+func (l *Lock) Release(ctx context.Context) error {
+	if l.cancel != nil {
+		l.cancel()
+	}
+	if err := l.inner.Release(ctx); err != nil {
+		return fmt.Errorf("release lock %s: %w", l.key, err)
 	}
 	return nil
 }
 
-// AcquireLockSimple 获取分布式锁（简化版，不返回 token）。
+// AcquireLock acquires a distributed lock with fixed TTL and no retry.
 //
-// 直接 SETNX，不生成 token——用于锁持有时间远小于 TTL、不会误删他人的场景。
-// ReleaseLockSimple 调用者自行保证只在持有锁时释放。
-func AcquireLockSimple(ctx context.Context, rdb *goredis.Client, key string, ttl time.Duration) (bool, error) {
-	ttlSec := max(int64(ttl.Seconds()), 1)
-	ok, err := rdb.SetNX(ctx, key, "1", time.Duration(ttlSec)*time.Second).Result()
-	if err != nil {
-		return false, fmt.Errorf("acquire lock simple: %w", err)
+// Returns (lock, true, nil) on success.
+// Returns (nil, false, nil) if the lock is held by another process.
+// Returns (nil, false, error) on Redis connection errors.
+//
+// Use for short-lived business locks where TTL comfortably exceeds critical section duration.
+func AcquireLock(ctx context.Context, rdb *goredis.Client, key string, ttl time.Duration) (*Lock, bool, error) {
+	client := redislock.New(rdb)
+	inner, err := client.Obtain(ctx, key, ttl, &redislock.Options{
+		RetryStrategy: redislock.NoRetry(),
+	})
+	if err == redislock.ErrNotObtained {
+		return nil, false, nil
 	}
-	return ok, nil
+	if err != nil {
+		return nil, false, fmt.Errorf("acquire lock %s: %w", key, err)
+	}
+	return &Lock{inner: inner, key: key}, true, nil
 }
 
-// ReleaseLockSimple 释放分布式锁（简化版，直接 DEL）。
+// AcquireLockWithExtend acquires a distributed lock with watch-dog auto-extend.
 //
-// 注意：不校验 token，存在误删他人锁的风险。
-// 仅在"释放时机远早于 TTL"的场景（如请求结束即释放）安全使用。
-func ReleaseLockSimple(ctx context.Context, rdb *goredis.Client, key string) error {
-	err := rdb.Del(ctx, key).Err()
+// A background goroutine refreshes the lock TTL every ttl/3 until Release is called.
+// This is the Redisson-style pattern: suitable for long-running critical sections
+// (e.g., cron scanner locks) where the duration is unpredictable.
+//
+// The watch-dog stops automatically when:
+//   - Release is called (normal path)
+//   - The refresh fails (lock expired or Redis unreachable)
+func AcquireLockWithExtend(ctx context.Context, rdb *goredis.Client, key string, ttl time.Duration) (*Lock, bool, error) {
+	client := redislock.New(rdb)
+	inner, err := client.Obtain(ctx, key, ttl, &redislock.Options{
+		RetryStrategy: redislock.NoRetry(),
+	})
+	if err == redislock.ErrNotObtained {
+		return nil, false, nil
+	}
 	if err != nil {
-		return fmt.Errorf("release lock simple: %w", err)
+		return nil, false, fmt.Errorf("acquire lock with extend %s: %w", key, err)
 	}
-	return nil
-}
 
-// generateLockToken 生成随机令牌（16 字节 hex = 32 字符）。
-func generateLockToken() (string, error) {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
+	// Watch-dog: periodically refresh the lock TTL
+	extCtx, cancel := context.WithCancel(context.Background())
+	l := &Lock{inner: inner, key: key, cancel: cancel}
+
+	interval := ttl / 3
+	if interval < time.Second {
+		interval = time.Second
 	}
-	return hex.EncodeToString(b), nil
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-extCtx.Done():
+				return
+			case <-ticker.C:
+				if err := inner.Refresh(extCtx, ttl, nil); err != nil {
+					// Refresh failed: lock may have expired or Redis is down.
+					// Stop the watch-dog; the critical section should detect
+					// this via context cancellation or explicit checks.
+					return
+				}
+			}
+		}
+	}()
+
+	return l, true, nil
 }

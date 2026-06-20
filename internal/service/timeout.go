@@ -62,9 +62,9 @@ func NewTimeoutService(
 //
 // 返回统计：(扫描总数, 退单成功数, 退单失败数)。
 func (s *TimeoutService) ScanAndRefund(ctx context.Context) (scanned, refunded, failed int, err error) {
-	// 1. 获取分布式锁
+	// 1. 获取分布式锁（watch-dog 自动续期，防止长扫描锁过期）
 	lockKey := redisx.TimeoutScanLockKey()
-	locked, err := redisx.AcquireLockSimple(ctx, s.rdb, lockKey, lockTTL)
+	lock, locked, err := redisx.AcquireLockWithExtend(ctx, s.rdb, lockKey, lockTTL)
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("timeout scan: acquire lock: %w", err)
 	}
@@ -73,7 +73,7 @@ func (s *TimeoutService) ScanAndRefund(ctx context.Context) (scanned, refunded, 
 		return 0, 0, 0, nil
 	}
 	defer func() {
-		if relErr := redisx.ReleaseLockSimple(ctx, s.rdb, lockKey); relErr != nil {
+		if relErr := lock.Release(ctx); relErr != nil {
 			s.logger.WarnContext(ctx, "timeout scan: release lock failed", "error", relErr)
 		}
 	}()

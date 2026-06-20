@@ -413,14 +413,14 @@ func TestNotifyScannerLock(t *testing.T) {
 	ctx := context.Background()
 
 	// 先手动获取扫描器锁
-	acquired, err := svc.cacheRepo.AcquireLock(ctx, notifyScannerLockKey, notifyScannerLockTTL)
+	lock, acquired, err := svc.cacheRepo.AcquireLock(ctx, notifyScannerLockKey, notifyScannerLockTTL)
 	if err != nil {
 		t.Fatalf("acquire lock: %v", err)
 	}
 	if !acquired {
 		t.Fatal("first acquire should succeed")
 	}
-	defer svc.cacheRepo.ReleaseLock(ctx, notifyScannerLockKey)
+	defer lock.Release(ctx)
 
 	// 锁已被持有，ExecPendingTasks 应该直接跳过（不报错）
 	if err := svc.ExecPendingTasks(ctx); err != nil {

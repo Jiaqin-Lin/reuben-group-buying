@@ -89,8 +89,8 @@ const (
 // 游标分页扫描 status=0（待发送）或 status=2（重试中）的任务，
 // 每批并发发送，全部处理完才返回。
 func (s *NotifyService) ExecPendingTasks(ctx context.Context) error {
-	// 获取分布式锁，防止多实例重复扫描
-	acquired, err := s.cacheRepo.AcquireLock(ctx, notifyScannerLockKey, notifyScannerLockTTL)
+	// 获取分布式锁（watch-dog 自动续期，防止大批量通知扫描超过 30s TTL）
+	lock, acquired, err := s.cacheRepo.AcquireLockWithExtend(ctx, notifyScannerLockKey, notifyScannerLockTTL)
 	if err != nil {
 		return fmt.Errorf("notify scanner: acquire lock: %w", err)
 	}
@@ -99,7 +99,7 @@ func (s *NotifyService) ExecPendingTasks(ctx context.Context) error {
 		return nil
 	}
 	defer func() {
-		if err := s.cacheRepo.ReleaseLock(ctx, notifyScannerLockKey); err != nil {
+		if err := lock.Release(ctx); err != nil {
 			slog.WarnContext(ctx, "notify scanner: release lock failed", "error", err)
 		}
 	}()

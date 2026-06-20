@@ -71,12 +71,17 @@ type CacheRepository interface {
 
 	// --- 分布式锁 ---
 
-	// AcquireLock 获取分布式锁。
-	// 返回 true 表示获取成功。
-	AcquireLock(ctx context.Context, key string, ttl time.Duration) (bool, error)
+	// AcquireLock 获取分布式锁（固定 TTL，无自动续期）。
+	// 返回 (lock, true, nil) 表示获取成功。
+	// 返回 (nil, false, nil) 表示锁被其它进程持有。
+	// 调用方必须 defer lock.Release(ctx) 释放锁。
+	// 适用于短临界区（业务锁单，TTL 远大于临界区耗时）。
+	AcquireLock(ctx context.Context, key string, ttl time.Duration) (*redisx.Lock, bool, error)
 
-	// ReleaseLock 释放分布式锁。
-	ReleaseLock(ctx context.Context, key string) error
+	// AcquireLockWithExtend 获取分布式锁（watch-dog 自动续期）。
+	// 后台 goroutine 每 ttl/3 续期一次，直到 Release 调用。
+	// 适用于长临界区（cron 扫描器，执行时间不可预测）。
+	AcquireLockWithExtend(ctx context.Context, key string, ttl time.Duration) (*redisx.Lock, bool, error)
 
 	// --- 人群标签缓存 ---
 
@@ -209,20 +214,20 @@ func (r *redisCacheRepo) GetLockResult(ctx context.Context, userID, outTradeNo s
 
 // --- 分布式锁 ---
 
-func (r *redisCacheRepo) AcquireLock(ctx context.Context, key string, ttl time.Duration) (bool, error) {
-	acquired, err := redisx.AcquireLockSimple(ctx, r.rdb, key, ttl)
+func (r *redisCacheRepo) AcquireLock(ctx context.Context, key string, ttl time.Duration) (*redisx.Lock, bool, error) {
+	lock, acquired, err := redisx.AcquireLock(ctx, r.rdb, key, ttl)
 	if err != nil {
-		return false, fmt.Errorf("cache acquire lock: %w", err)
+		return nil, false, fmt.Errorf("cache acquire lock: %w", err)
 	}
-	return acquired, nil
+	return lock, acquired, nil
 }
 
-func (r *redisCacheRepo) ReleaseLock(ctx context.Context, key string) error {
-	err := redisx.ReleaseLockSimple(ctx, r.rdb, key)
+func (r *redisCacheRepo) AcquireLockWithExtend(ctx context.Context, key string, ttl time.Duration) (*redisx.Lock, bool, error) {
+	lock, acquired, err := redisx.AcquireLockWithExtend(ctx, r.rdb, key, ttl)
 	if err != nil {
-		return fmt.Errorf("cache release lock: %w", err)
+		return nil, false, fmt.Errorf("cache acquire lock with extend: %w", err)
 	}
-	return nil
+	return lock, acquired, nil
 }
 
 // --- 人群标签缓存 ---

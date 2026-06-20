@@ -103,6 +103,16 @@ type OrderRepository interface {
 	// FindOrdersByTeamID 查团下所有订单。
 	// 用于成团后构建回调 payload。
 	FindOrdersByTeamID(ctx context.Context, teamID string) ([]model.Order, error)
+
+	// --- 补偿回滚（支付创建失败时撤销已提交的订单/团）---
+
+	// RollbackNewTeam 删除新建团时创建的 team 和 order。
+	// 用于支付创建失败时的补偿事务：锁单 DB 事务已提交，需要回滚。
+	RollbackNewTeam(ctx context.Context, teamID, orderID string) error
+
+	// RollbackJoinTeam 删除加入团时创建的 order，并回退 team.lock_count -= 1。
+	// 用于支付创建失败时的补偿事务。
+	RollbackJoinTeam(ctx context.Context, teamID, orderID string) error
 }
 
 // TimeoutOrder 超时订单联表查询结果。
@@ -533,4 +543,35 @@ func (r *orderRepo) FindOrdersByTeamID(ctx context.Context, teamID string) ([]mo
 		return nil, fmt.Errorf("find orders by team %s: %w", teamID, err)
 	}
 	return orders, nil
+}
+
+// --- 补偿回滚 ---
+
+// RollbackNewTeam 删除新建团时创建的 team 和 order（补偿事务）。
+func (r *orderRepo) RollbackNewTeam(ctx context.Context, teamID, orderID string) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("order_id = ?", orderID).Delete(&model.Order{}).Error; err != nil {
+			return fmt.Errorf("delete order %s: %w", orderID, err)
+		}
+		if err := tx.Where("team_id = ?", teamID).Delete(&model.Team{}).Error; err != nil {
+			return fmt.Errorf("delete team %s: %w", teamID, err)
+		}
+		return nil
+	})
+}
+
+// RollbackJoinTeam 删除加入团时创建的 order，并回退 team.lock_count（补偿事务）。
+func (r *orderRepo) RollbackJoinTeam(ctx context.Context, teamID, orderID string) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("order_id = ?", orderID).Delete(&model.Order{}).Error; err != nil {
+			return fmt.Errorf("delete order %s: %w", orderID, err)
+		}
+		result := tx.Model(&model.Team{}).
+			Where("team_id = ? AND lock_count > 0", teamID).
+			Update("lock_count", gorm.Expr("lock_count - 1"))
+		if result.Error != nil {
+			return fmt.Errorf("decrement lock_count for team %s: %w", teamID, result.Error)
+		}
+		return nil
+	})
 }

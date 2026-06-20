@@ -107,9 +107,9 @@ func (s *LockService) Lock(ctx context.Context, req LockRequest) (*LockResult, e
 		return cached, nil
 	}
 
-	// 2. 获取分布式锁
+	// 2. 获取分布式锁（bsm/redislock，token 安全释放 + 固定 TTL）
 	lockKey := redisx.LockOrderKey(req.UserID, req.OutTradeNo)
-	acquired, err := s.cacheRepo.AcquireLock(ctx, lockKey, s.lockTTL)
+	lock, acquired, err := s.cacheRepo.AcquireLock(ctx, lockKey, s.lockTTL)
 	if err != nil {
 		return nil, fmt.Errorf("lock: acquire lock: %w", err)
 	}
@@ -117,7 +117,7 @@ func (s *LockService) Lock(ctx context.Context, req LockRequest) (*LockResult, e
 		return nil, &LockError{Code: errcode.CodeUnknownErr, Err: fmt.Errorf("system busy, please retry")}
 	}
 	defer func() {
-		if err := s.cacheRepo.ReleaseLock(ctx, lockKey); err != nil {
+		if err := lock.Release(ctx); err != nil {
 			slog.WarnContext(ctx, "lock: release lock failed", "key", lockKey, "error", err)
 		}
 	}()
@@ -186,13 +186,20 @@ func (s *LockService) Lock(ctx context.Context, req LockRequest) (*LockResult, e
 	}
 
 	// 7. 创建支付单（压测/测试时可降级跳过）
+	// 支付创建失败 → 补偿回滚（删订单/团、释放 Redis 名额），不缓存结果，返回错误。
+	// 同 outTradeNo 重试时走正常流程重建订单+支付。
 	if s.payGateway != nil && !dynamic.FeatureSkipPayment.Get() {
 		payURL, paymentErr := s.createPayment(ctx, result)
 		if paymentErr != nil {
-			slog.WarnContext(ctx, "lock: create payment failed", "order_id", result.OrderID, "error", paymentErr)
-		} else {
-			result.PayURL = payURL
+			slog.ErrorContext(ctx, "lock: create payment failed, rolling back",
+				"order_id", result.OrderID,
+				"team_id", result.TeamID,
+				"error", paymentErr,
+			)
+			s.rollbackLock(ctx, req.TeamID == "", result, req.ActivityID)
+			return nil, fmt.Errorf("create payment: %w", paymentErr)
 		}
+		result.PayURL = payURL
 	}
 
 	// 8. 缓存结果
@@ -201,6 +208,7 @@ func (s *LockService) Lock(ctx context.Context, req LockRequest) (*LockResult, e
 	slog.DebugContext(ctx, "lock done", "user_id", req.UserID, "order_id", result.OrderID, "team_id", result.TeamID)
 	return result, nil
 }
+
 
 // lockNewTeam 新建团 + 首单。
 func (s *LockService) lockNewTeam(ctx context.Context, req LockRequest, trial *TrialResult, activity *model.Activity, stockTTL time.Duration) (*LockResult, error) {
@@ -327,6 +335,40 @@ func (s *LockService) lockJoinTeam(ctx context.Context, req LockRequest, trial *
 }
 
 // --- 辅助函数 ---
+
+// rollbackLock 支付创建失败时回滚已提交的锁单。
+//
+// 释放 Redis 名额 + DB 补偿事务（删订单/团 或 删订单+回退 lock_count）。
+// 回滚操作是 best-effort：失败只打日志，不影响对外返回的错误。
+func (s *LockService) rollbackLock(ctx context.Context, isNewTeam bool, result *LockResult, activityID int64) {
+	// 1. 释放 Redis 名额
+	if err := s.cacheRepo.ReleaseStock(ctx, activityID, result.TeamID, result.OutTradeNo); err != nil {
+		slog.WarnContext(ctx, "lock rollback: release stock failed",
+			"team_id", result.TeamID,
+			"out_trade_no", result.OutTradeNo,
+			"error", err,
+		)
+	}
+
+	// 2. DB 补偿事务
+	if isNewTeam {
+		if err := s.orderRepo.RollbackNewTeam(ctx, result.TeamID, result.OrderID); err != nil {
+			slog.WarnContext(ctx, "lock rollback: rollback new team failed",
+				"team_id", result.TeamID,
+				"order_id", result.OrderID,
+				"error", err,
+			)
+		}
+	} else {
+		if err := s.orderRepo.RollbackJoinTeam(ctx, result.TeamID, result.OrderID); err != nil {
+			slog.WarnContext(ctx, "lock rollback: rollback join team failed",
+				"team_id", result.TeamID,
+				"order_id", result.OrderID,
+				"error", err,
+			)
+		}
+	}
+}
 
 // createPayment 创建支付单并调用支付网关获取 payUrl。
 func (s *LockService) createPayment(ctx context.Context, result *LockResult) (string, error) {
