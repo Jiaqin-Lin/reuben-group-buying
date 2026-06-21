@@ -1,4 +1,4 @@
-.PHONY: build run test lint clean dev up down build-web
+.PHONY: build run test lint clean dev up down build-web docker-build docker-up docker-down monitor-up monitor-down
 
 # Variables
 APP_NAME := group-buy
@@ -27,6 +27,23 @@ up:
 
 down:
 	docker compose down
+
+docker-build:
+	docker compose build app
+
+docker-up:
+	docker compose up -d --build app
+
+docker-down:
+	docker compose down
+
+# Monitoring (Prometheus + Grafana, requires app already running)
+monitor-up:
+	docker compose up -d prometheus grafana
+
+monitor-down:
+	docker compose stop prometheus grafana
+	docker compose rm -f prometheus grafana
 
 # Test
 test:

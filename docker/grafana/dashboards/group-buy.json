@@ -1,0 +1,169 @@
+{
+  "title": "拼团营销系统",
+  "uid": "group-buy",
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"lineInterpolation": "smooth", "showPoints": "never"}
+        }
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "targets": [
+        {"expr": "rate(groupbuy_requests_total[1m])", "legendFormat": "{{endpoint}}-{{code}}"}
+      ],
+      "title": "QPS 按接口",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"lineInterpolation": "smooth", "showPoints": "never"},
+          "unit": "s"
+        }
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "id": 2,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}},
+      "targets": [
+        {"expr": "histogram_quantile(0.99, rate(groupbuy_request_duration_seconds_bucket[1m]))", "legendFormat": "P99-{{endpoint}}"},
+        {"expr": "histogram_quantile(0.50, rate(groupbuy_request_duration_seconds_bucket[1m]))", "legendFormat": "P50-{{endpoint}}"}
+      ],
+      "title": "请求延迟",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "max": 1, "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 0.8}]},
+          "unit": "percentunit"
+        }
+      },
+      "gridPos": {"h": 8, "w": 6, "x": 0, "y": 8},
+      "id": 3,
+      "targets": [
+        {"expr": "rate(groupbuy_cache_total{result=\"hit\"}[1m]) / rate(groupbuy_cache_total[1m])", "legendFormat": "命中率"}
+      ],
+      "title": "缓存命中率",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"lineInterpolation": "smooth", "showPoints": "never"}
+        }
+      },
+      "gridPos": {"h": 8, "w": 9, "x": 6, "y": 8},
+      "id": 4,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}},
+      "targets": [
+        {"expr": "rate(groupbuy_redis_total{result=\"ok\"}[1m])", "legendFormat": "{{operation}}-ok"}
+      ],
+      "title": "Redis 操作 QPS",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"lineInterpolation": "smooth", "showPoints": "never"}
+        }
+      },
+      "gridPos": {"h": 8, "w": 9, "x": 15, "y": 8},
+      "id": 5,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}},
+      "targets": [
+        {"expr": "rate(groupbuy_redis_total{result=\"err\"}[1m])", "legendFormat": "{{operation}}-err"}
+      ],
+      "title": "Redis 错误",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"lineInterpolation": "smooth", "showPoints": "never"}
+        }
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "id": 6,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}},
+      "targets": [
+        {"expr": "rate(groupbuy_business_errors_total[1m])", "legendFormat": "{{code}}"}
+      ],
+      "title": "业务错误分布",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"lineInterpolation": "smooth", "showPoints": "never"}
+        }
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "id": 7,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}},
+      "targets": [
+        {"expr": "rate(groupbuy_db_total[1m])", "legendFormat": "{{operation}}-{{result}}"}
+      ],
+      "title": "DB 操作 QPS",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"lineInterpolation": "smooth", "showPoints": "never"},
+          "unit": "bytes"
+        }
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
+      "id": 8,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}},
+      "targets": [
+        {"expr": "go_memstats_alloc_bytes", "legendFormat": "alloc"},
+        {"expr": "go_memstats_sys_bytes", "legendFormat": "sys"}
+      ],
+      "title": "Go 内存",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"lineInterpolation": "smooth", "showPoints": "never"}
+        }
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
+      "id": 9,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}},
+      "targets": [
+        {"expr": "go_goroutines", "legendFormat": "goroutines"},
+        {"expr": "go_threads", "legendFormat": "threads"}
+      ],
+      "title": "Go Runtime",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "10s",
+  "time": {"from": "now-15m", "to": "now"},
+  "templating": {"list": []},
+  "version": 1
+}

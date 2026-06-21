@@ -7,6 +7,8 @@ import (
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
+
+	"github.com/reuben/group-buying/internal/metrics"
 )
 
 //go:embed lua/occupy_stock.lua
@@ -59,8 +61,10 @@ func TryOccupyStock(ctx context.Context, rdb *goredis.Client, activityID int64, 
 
 	result, err := occupyScript.Run(ctx, rdb, []string{holdersKey, fullKey}, outTradeNo, targetCount, ttlSec).Int()
 	if err != nil {
+		metrics.IncrRedis("occupy", "err")
 		return 0, fmt.Errorf("occupy stock: %w", err)
 	}
+	metrics.IncrRedis("occupy", "ok")
 
 	return OccupyStockResult(result), nil
 }
@@ -80,8 +84,10 @@ func ReleaseStock(ctx context.Context, rdb *goredis.Client, activityID int64, te
 
 	_, err := releaseScript.Run(ctx, rdb, []string{holdersKey, fullKey}, outTradeNo).Result()
 	if err != nil {
+		metrics.IncrRedis("release", "err")
 		return fmt.Errorf("release stock: %w", err)
 	}
+	metrics.IncrRedis("release", "ok")
 	return nil
 }
 

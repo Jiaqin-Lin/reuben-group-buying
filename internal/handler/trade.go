@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/reuben/group-buying/internal/errcode"
+	"github.com/reuben/group-buying/internal/metrics"
 	"github.com/reuben/group-buying/internal/response"
 	"github.com/reuben/group-buying/internal/service"
 )
@@ -50,8 +51,10 @@ func (h *TradeHandler) LockOrder(c *gin.Context) {
 		var trialErr *service.TrialError
 		switch {
 		case errors.As(err, &lockErr):
+			metrics.IncrBusinessError(lockErr.ErrorCode())
 			response.FailWithMsg(c, lockErr.ErrorCode(), err.Error())
 		case errors.As(err, &trialErr):
+			metrics.IncrBusinessError(trialErr.ErrorCode())
 			response.FailWithMsg(c, trialErr.ErrorCode(), err.Error())
 		default:
 			slog.ErrorContext(c.Request.Context(), "lock: unexpected error", "error", err)
@@ -79,6 +82,7 @@ func (h *TradeHandler) Settlement(c *gin.Context) {
 	if err != nil {
 		var settleErr *service.SettlementError
 		if errors.As(err, &settleErr) {
+			metrics.IncrBusinessError(settleErr.ErrorCode())
 			response.FailWithMsg(c, settleErr.ErrorCode(), err.Error())
 		} else {
 			slog.ErrorContext(c.Request.Context(), "settlement: unexpected error", "error", err)
@@ -106,6 +110,7 @@ func (h *TradeHandler) Refund(c *gin.Context) {
 	if err != nil {
 		var refundErr *service.RefundError
 		if errors.As(err, &refundErr) {
+			metrics.IncrBusinessError(refundErr.ErrorCode())
 			response.FailWithMsg(c, refundErr.ErrorCode(), err.Error())
 		} else {
 			slog.ErrorContext(c.Request.Context(), "refund: unexpected error", "error", err)

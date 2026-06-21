@@ -14,6 +14,7 @@ import (
 	"github.com/reuben/group-buying/internal/cache"
 	"github.com/reuben/group-buying/internal/config/dynamic"
 	"github.com/reuben/group-buying/internal/errcode"
+	"github.com/reuben/group-buying/internal/metrics"
 	"github.com/reuben/group-buying/internal/model"
 	"github.com/reuben/group-buying/internal/repository"
 )
@@ -173,9 +174,11 @@ func (s *TrialService) resolveActivityID(ctx context.Context, req TrialRequest) 
 	// 尝试本地缓存
 	if s.localCache != nil {
 		if id, ok := s.localCache.GetActivityProduct(req.Source, req.Channel, req.GoodsID); ok {
+				metrics.IncrCacheHit()
 			return id, nil
 		}
 	}
+		metrics.IncrCacheMiss()
 
 	// fallback DB
 	ap, err := s.activityRepo.FindActivityProduct(ctx, req.Source, req.Channel, req.GoodsID)
@@ -191,9 +194,11 @@ func (s *TrialService) resolveActivityWithDiscount(ctx context.Context, activity
 	// 尝试本地缓存
 	if s.localCache != nil {
 		if awd, ok := s.localCache.GetActivityWithDiscount(activityID); ok {
+				metrics.IncrCacheHit()
 			return awd, nil
 		}
 	}
+		metrics.IncrCacheMiss()
 
 	// fallback DB
 	awd, err := s.activityRepo.FindActivityWithDiscount(ctx, activityID)
@@ -212,9 +217,11 @@ func (s *TrialService) resolveProduct(ctx context.Context, goodsID string) (*mod
 	// 尝试本地缓存
 	if s.localCache != nil {
 		if p, ok := s.localCache.GetProduct(goodsID); ok {
+				metrics.IncrCacheHit()
 			return p, nil
 		}
 	}
+		metrics.IncrCacheMiss()
 
 	// fallback DB
 	prod, err := s.productRepo.FindProductByGoodsID(ctx, goodsID)

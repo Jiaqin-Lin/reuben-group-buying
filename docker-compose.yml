@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   mysql:
     image: mysql:8.0
@@ -39,6 +37,62 @@ services:
       timeout: 3s
       retries: 10
 
+  app:
+    build: .
+    container_name: group-buy-app
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - GIN_MODE=release
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=dev
+      - MYSQL_PASSWORD=dev123
+      - MYSQL_DATABASE=group_buy_market
+      - REDIS_ADDR=redis:6379
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: group-buy-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+    depends_on:
+      - app
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: group-buy-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_INSTALL_PLUGINS=
+    volumes:
+      - ./docker/grafana/datasources/prometheus.yml:/etc/grafana/provisioning/datasources/prometheus.yml:ro
+      - ./docker/grafana/dashboards/dashboard.yml:/etc/grafana/provisioning/dashboards/dashboard.yml:ro
+      - ./docker/grafana/dashboards/group-buy.json:/var/lib/grafana/dashboards/group-buy.json:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
 volumes:
   mysql_data:
   redis_data:
+  prometheus_data:
+  grafana_data:

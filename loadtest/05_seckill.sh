@@ -98,7 +98,7 @@ echo "  团内订单数: $JOIN_COUNT (期望 $M = 1创始人 + $((M-1))抢到)"
 FULL_KEY=$(redis_exec EXISTS "bgm:stock:${ACTIVITY_ID}:${TEAM_ID}:full")
 echo "  Redis bgm:stock:${ACTIVITY_ID}:${TEAM_ID}:full = $FULL_KEY (期望 1, 满标标记)"
 
-# 成功/拦截统计（从 vegeta JSON 结果分析）
+# 成功/拦截统计（从 $VEGETA JSON 结果分析）
 echo ""
 echo "  ── 请求分布 ──"
 	echo "  期望: ${M} 人成功加入团, $((N + 1 - M)) 个请求被拦截"

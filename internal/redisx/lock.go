@@ -8,6 +8,7 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/bsm/redislock"
+	"github.com/reuben/group-buying/internal/metrics"
 )
 
 // Lock wraps a redislock.Lock with optional watch-dog auto-extend.
@@ -59,8 +60,10 @@ func AcquireLock(ctx context.Context, rdb *goredis.Client, key string, ttl time.
 		return nil, false, nil
 	}
 	if err != nil {
+		metrics.IncrRedis("lock", "err")
 		return nil, false, fmt.Errorf("acquire lock %s: %w", key, err)
 	}
+	metrics.IncrRedis("lock", "ok")
 	return &Lock{inner: inner, key: key}, true, nil
 }
 
@@ -82,8 +85,10 @@ func AcquireLockWithExtend(ctx context.Context, rdb *goredis.Client, key string,
 		return nil, false, nil
 	}
 	if err != nil {
+		metrics.IncrRedis("lock", "err")
 		return nil, false, fmt.Errorf("acquire lock with extend %s: %w", key, err)
 	}
+	metrics.IncrRedis("lock", "ok")
 
 	// Watch-dog: periodically refresh the lock TTL
 	extCtx, cancel := context.WithCancel(context.Background())

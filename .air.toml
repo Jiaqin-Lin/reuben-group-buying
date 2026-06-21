@@ -1,0 +1,39 @@
+# air.toml — Go 热重载配置（make dev 使用 air 启动）
+root = "."
+testdata_dir = "testdata"
+tmp_dir = "tmp"
+
+[build]
+  cmd = "go build -o ./tmp/server ./cmd/server"
+  bin = "./tmp/server"
+  full_bin = ""
+  include_ext = ["go", "tpl", "tmpl", "html"]
+  exclude_dir = ["tmp", "vendor", "node_modules", "web", "docs", "loadtest", "group-shopping"]
+  exclude_file = []
+  exclude_regex = ["_test.go"]
+  exclude_unchanged = false
+  follow_symlink = false
+  log = "build-errors.log"
+  poll = false
+  poll_interval = 0
+  delay = 500
+  stop_on_error = true
+  send_interrupt = true
+  kill_delay = 500
+
+[log]
+  main_only = false
+  time = false
+
+[color]
+  main = "magenta"
+  watcher = "cyan"
+  build = "yellow"
+  runner = "green"
+
+[misc]
+  clean_on_exit = false
+
+[screen]
+  clear_on_rebuild = false
+  keep_scroll = true

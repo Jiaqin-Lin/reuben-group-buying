@@ -10,13 +10,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"runtime"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	goredis "github.com/redis/go-redis/v9"
 	"github.com/robfig/cron/v3"
 	"gorm.io/gorm"
@@ -31,6 +30,7 @@ import (
 	"github.com/reuben/group-buying/internal/infra/redis"
 	"github.com/reuben/group-buying/internal/middleware/admin"
 	"github.com/reuben/group-buying/internal/middleware/logging"
+	ginmetrics "github.com/reuben/group-buying/internal/middleware/metrics"
 	"github.com/reuben/group-buying/internal/middleware/recovery"
 	"github.com/reuben/group-buying/internal/middleware/tracing"
 	"github.com/reuben/group-buying/internal/pay"
@@ -51,20 +51,6 @@ type App struct {
 	ctx        context.Context    // app 级 context，cron job 和 shutdown 使用
 	cancel     context.CancelFunc // 触发 graceful shutdown 时 cancel
 }
-
-// metrics 全局计数器（atomic，无锁）。
-var (
-	metricReqTotal  atomic.Int64
-	metricReqTrial  atomic.Int64
-	metricReqLock   atomic.Int64
-	metricReqSettle atomic.Int64
-	metricReqRefund atomic.Int64
-	metricErr5xx    atomic.Int64
-	metricErr4xx    atomic.Int64
-	metricCacheHit  atomic.Int64
-	metricCacheMiss atomic.Int64
-	startTime       = time.Now()
-)
 
 // New 从配置构建完整的 App。
 func New(cfg *config.Config) (*App, error) {
@@ -108,10 +94,11 @@ func New(cfg *config.Config) (*App, error) {
 	notifyRepo := repository.NewNotifyTaskRepo(db)
 	cacheRepo := repository.NewRedisCacheRepo(rdb)
 
-	// 6. 选择支付网关：支付宝配置了 app_id 则用真实网关，否则降级 Mock
-	var payGateway pay.Gateway
+	// 6. 支付网关：始终创建 Mock，按需创建 Alipay，通过 DynamicGateway 运行时切换
+	mockGW := pay.NewMock()
+	var alipayGW pay.Gateway
 	if cfg.Alipay.AppID != "" {
-		alipayGW, err := pay.NewAlipay(pay.AlipayConfig{
+		agw, err := pay.NewAlipay(pay.AlipayConfig{
 			AppID:           cfg.Alipay.AppID,
 			PrivateKey:      cfg.Alipay.PrivateKey,
 			AlipayPublicKey: cfg.Alipay.AlipayPublicKey,
@@ -121,14 +108,15 @@ func New(cfg *config.Config) (*App, error) {
 			SignType:        cfg.Alipay.SignType,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("init alipay gateway: %w", err)
+			logger.Warn("alipay init failed, falling back to mock-only", "error", err)
+		} else {
+			alipayGW = agw
+			logger.Info("alipay gateway enabled", "app_id", cfg.Alipay.AppID, "sandbox", cfg.Alipay.Sandbox)
 		}
-		payGateway = alipayGW
-		logger.Info("alipay gateway enabled", "app_id", cfg.Alipay.AppID, "sandbox", cfg.Alipay.Sandbox)
 	} else {
-		payGateway = pay.NewMock()
-		logger.Info("using mock payment gateway (alipay.app_id not configured)")
+		logger.Info("alipay not configured, mock-only mode")
 	}
+	payGateway := pay.NewDynamicGateway(mockGW, alipayGW, dynamic.FeatureUseMockPayment)
 
 	// 7. 组装 Service 层（注入 localCache + payment）
 	trialSvc := service.NewTrialService(activityRepo, productRepo, cacheRepo, crowdRepo, localCache)
@@ -162,6 +150,7 @@ func New(cfg *config.Config) (*App, error) {
 		dynamic.TimeoutScanBatch,
 		dynamic.FeatureSkipCrowd,
 		dynamic.FeatureSkipPayment,
+		dynamic.FeatureUseMockPayment,
 	); err != nil {
 		return nil, fmt.Errorf("register dynamic configs: %w", err)
 	}
@@ -169,7 +158,7 @@ func New(cfg *config.Config) (*App, error) {
 	if err := dynMgr.Load(context.Background()); err != nil {
 		return nil, fmt.Errorf("load dynamic configs: %w", err)
 	}
-	logger.Info("dynamic config loaded", "keys", 8)
+	logger.Info("dynamic config loaded", "keys", 9)
 
 	// 10. 超时退单扫描（Phase 9b）
 	timeoutSvc := service.NewTimeoutService(
@@ -203,12 +192,12 @@ func New(cfg *config.Config) (*App, error) {
 	router.Use(tracing.Middleware())
 	router.Use(bodyLimitMiddleware(1 << 20)) // 1MB request body limit
 	router.Use(charsetMiddleware())
-	router.Use(metricsMiddleware())
+	router.Use(ginmetrics.Middleware())
 	router.Use(logging.Middleware(logger))
 	router.Use(recovery.Middleware(logger))
 
 	router.GET("/health", healthHandler(db, rdb, localCache))
-	router.GET("/metrics", metricsHandler())
+	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
 	router.GET("/ready", readyHandler(db, rdb))
 	router.GET("/api/v1/products", indexHandler.ListProducts)
 	router.POST("/api/v1/trial", indexHandler.Trial)
@@ -487,60 +476,6 @@ func readyHandler(db *gorm.DB, rdb *goredis.Client) gin.HandlerFunc {
 	}
 }
 
-// metricsHandler Prometheus 兼容的指标端点。
-func metricsHandler() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		uptime := time.Since(startTime).Seconds()
-		var mem runtime.MemStats
-		runtime.ReadMemStats(&mem)
-
-		c.String(http.StatusOK,
-			`# HELP groupbuy_uptime_seconds Server uptime in seconds
-# TYPE groupbuy_uptime_seconds gauge
-groupbuy_uptime_seconds %.0f
-
-# HELP groupbuy_requests_total Total requests
-# TYPE groupbuy_requests_total counter
-groupbuy_requests_total %d
-groupbuy_requests_total{endpoint="trial"} %d
-groupbuy_requests_total{endpoint="lock"} %d
-groupbuy_requests_total{endpoint="settlement"} %d
-groupbuy_requests_total{endpoint="refund"} %d
-
-# HELP groupbuy_errors_total Total errors
-# TYPE groupbuy_errors_total counter
-groupbuy_errors_total{code="4xx"} %d
-groupbuy_errors_total{code="5xx"} %d
-
-# HELP groupbuy_cache_total Cache operations
-# TYPE groupbuy_cache_total counter
-groupbuy_cache_total{result="hit"} %d
-groupbuy_cache_total{result="miss"} %d
-
-# HELP groupbuy_memory_bytes Memory usage
-# TYPE groupbuy_memory_bytes gauge
-groupbuy_memory_bytes{type="alloc"} %d
-groupbuy_memory_bytes{type="sys"} %d
-groupbuy_memory_bytes{type="heap_objects"} %d
-`,
-			uptime,
-			metricReqTotal.Load(),
-			metricReqTrial.Load(),
-			metricReqLock.Load(),
-			metricReqSettle.Load(),
-			metricReqRefund.Load(),
-			metricErr4xx.Load(),
-			metricErr5xx.Load(),
-			metricCacheHit.Load(),
-			metricCacheMiss.Load(),
-			mem.Alloc,
-			mem.Sys,
-			mem.HeapObjects,
-		)
-	}
-}
-
-
 // bodyLimitMiddleware 限制请求体大小，防止大 payload 导致 OOM。
 func bodyLimitMiddleware(maxBytes int64) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -548,41 +483,6 @@ func bodyLimitMiddleware(maxBytes int64) gin.HandlerFunc {
 		c.Next()
 	}
 }
-
-// metricsMiddleware 请求计数中间件。
-func metricsMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		metricReqTotal.Add(1)
-
-		c.Next()
-
-		// 按路径分类
-		switch {
-		case c.FullPath() == "/api/v1/trial":
-			metricReqTrial.Add(1)
-		case c.FullPath() == "/api/v1/trade/lock":
-			metricReqLock.Add(1)
-		case c.FullPath() == "/api/v1/trade/settlement":
-			metricReqSettle.Add(1)
-		case c.FullPath() == "/api/v1/trade/refund":
-			metricReqRefund.Add(1)
-		}
-
-		// 错误分类
-		status := c.Writer.Status()
-		if status >= 500 {
-			metricErr5xx.Add(1)
-		} else if status >= 400 {
-			metricErr4xx.Add(1)
-		}
-	}
-}
-
-// IncrCacheHit 缓存命中计数（供 service 层调用）。
-func IncrCacheHit() { metricCacheHit.Add(1) }
-
-// IncrCacheMiss 缓存未命中计数（供 service 层调用）。
-func IncrCacheMiss() { metricCacheMiss.Add(1) }
 
 // charsetMiddleware 确保所有响应都带上 charset=utf-8。
 // Gin 的 c.JSON/c.String 已自带 charset，但静态文件服务（c.File/router.Static）

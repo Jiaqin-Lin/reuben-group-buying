@@ -8,6 +8,8 @@ import (
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
+
+	"github.com/reuben/group-buying/internal/metrics"
 )
 
 //go:embed lua/take_limit_incr.lua
@@ -44,8 +46,10 @@ func TakeLimitCheckAndIncr(ctx context.Context, rdb *goredis.Client, activityID 
 
 	result, err := takeLimitLua.Run(ctx, rdb, []string{key}, dbCount, limit, ttlSec).Int64()
 	if err != nil {
+		metrics.IncrRedis("incr", "err")
 		return nil, fmt.Errorf("take limit check and incr: %w", err)
 	}
+	metrics.IncrRedis("incr", "ok")
 
 	if result == 0 {
 		return &TakeLimitResult{Allowed: false}, nil
@@ -61,8 +65,10 @@ func IncrTakeCount(ctx context.Context, rdb *goredis.Client, activityID int64, u
 	key := TakeLimitKey(activityID, userID)
 	count, err := rdb.Incr(ctx, key).Result()
 	if err != nil {
+		metrics.IncrRedis("incr", "err")
 		return 0, fmt.Errorf("incr take count: %w", err)
 	}
+	metrics.IncrRedis("incr", "ok")
 	// INCR 在 key 不存在时新建（TTL=-1），需手动设置过期时间
 	if ttl > 0 {
 		ttlSec := max(int64(ttl.Seconds()), 1)
@@ -111,8 +117,10 @@ func CacheSet(ctx context.Context, rdb *goredis.Client, key string, value any, t
 	ttlSec := max(ttl.Seconds(), 1)
 	err = rdb.Set(ctx, key, data, time.Duration(ttlSec)*time.Second).Err()
 	if err != nil {
+		metrics.IncrRedis("set", "err")
 		return fmt.Errorf("cache set: %w", err)
 	}
+	metrics.IncrRedis("set", "ok")
 	return nil
 }
 
@@ -121,11 +129,14 @@ func CacheSet(ctx context.Context, rdb *goredis.Client, key string, value any, t
 func CacheGet(ctx context.Context, rdb *goredis.Client, key string, target any) (hit bool, err error) {
 	data, err := rdb.Get(ctx, key).Bytes()
 	if err == goredis.Nil {
+		metrics.IncrRedis("get", "miss")
 		return false, nil
 	}
 	if err != nil {
+		metrics.IncrRedis("get", "err")
 		return false, fmt.Errorf("cache get: %w", err)
 	}
+	metrics.IncrRedis("get", "ok")
 	if err := json.Unmarshal(data, target); err != nil {
 		return false, fmt.Errorf("cache get unmarshal: %w", err)
 	}
