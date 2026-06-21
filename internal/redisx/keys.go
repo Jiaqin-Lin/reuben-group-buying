@@ -33,10 +33,17 @@ func StockFullKey(activityID int64, teamID string) string {
 
 // --- 用户限购 ---
 
-// TakeLimitKey 用户在某活动下的参与次数 key。
+// TakeLimitKey 用户在某活动下的参与次数 key（已支付）。
 // 支付成功时 +1，TTL 对齐活动结束时间。
 func TakeLimitKey(activityID int64, userID string) string {
 	return fmt.Sprintf("%s:take:%d:%s", prefix, activityID, userID)
+}
+
+// ActiveCountKey 用户在某活动下的活跃订单数 key（锁定+已支付）。
+// 锁单成功时 +1，退单/超时时 -1，TTL 对齐活动结束时间。
+// 与 TakeLimitKey 的区别：TakeLimitKey 只计已支付，ActiveCountKey 计锁定+已支付。
+func ActiveCountKey(activityID int64, userID string) string {
+	return fmt.Sprintf("%s:active:%d:%s", prefix, activityID, userID)
 }
 
 // --- 分布式锁 ---

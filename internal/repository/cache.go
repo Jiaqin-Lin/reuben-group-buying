@@ -60,6 +60,20 @@ type CacheRepository interface {
 	// 返回 (newCount, true) 表示允许参与，(0, false) 表示已达上限。
 	TakeLimitCheckAndIncr(ctx context.Context, activityID int64, userID string, dbCount int64, limit int, ttl time.Duration) (newCount int64, allowed bool, err error)
 
+	// --- 活跃订单计数（锁定+已支付，锁单时软检查限购用）---
+
+	// GetActiveCount 获取用户活跃订单数。key 不存在返回 0。
+	GetActiveCount(ctx context.Context, activityID int64, userID string) (int64, error)
+
+	// IncrActiveCount 递增用户活跃订单数（锁单成功时 +1）。
+	IncrActiveCount(ctx context.Context, activityID int64, userID string, ttl time.Duration) (int64, error)
+
+	// DecrActiveCount 递减用户活跃订单数（退单/超时时 -1）。
+	DecrActiveCount(ctx context.Context, activityID int64, userID string) error
+
+	// InitActiveCount 初始化用户活跃订单数（从 DB 加载后回种，SETNX 语义）。
+	InitActiveCount(ctx context.Context, activityID int64, userID string, count int64, ttl time.Duration) error
+
 	// --- 锁单结果缓存 ---
 
 	// CacheLockResult 缓存锁单结果（10min TTL）。
@@ -185,6 +199,40 @@ func (r *redisCacheRepo) TakeLimitCheckAndIncr(ctx context.Context, activityID i
 		return 0, false, nil
 	}
 	return result.NewCount, true, nil
+}
+
+// --- 活跃订单计数（锁定+已支付）---
+
+func (r *redisCacheRepo) GetActiveCount(ctx context.Context, activityID int64, userID string) (int64, error) {
+	count, err := redisx.GetActiveCount(ctx, r.rdb, activityID, userID)
+	if err != nil {
+		return 0, fmt.Errorf("cache get active count: %w", err)
+	}
+	return count, nil
+}
+
+func (r *redisCacheRepo) IncrActiveCount(ctx context.Context, activityID int64, userID string, ttl time.Duration) (int64, error) {
+	count, err := redisx.IncrActiveCount(ctx, r.rdb, activityID, userID, ttl)
+	if err != nil {
+		return 0, fmt.Errorf("cache incr active count: %w", err)
+	}
+	return count, nil
+}
+
+func (r *redisCacheRepo) DecrActiveCount(ctx context.Context, activityID int64, userID string) error {
+	err := redisx.DecrActiveCount(ctx, r.rdb, activityID, userID)
+	if err != nil {
+		return fmt.Errorf("cache decr active count: %w", err)
+	}
+	return nil
+}
+
+func (r *redisCacheRepo) InitActiveCount(ctx context.Context, activityID int64, userID string, count int64, ttl time.Duration) error {
+	err := redisx.InitActiveCount(ctx, r.rdb, activityID, userID, count, ttl)
+	if err != nil {
+		return fmt.Errorf("cache init active count: %w", err)
+	}
+	return nil
 }
 
 // --- 锁单结果缓存 ---

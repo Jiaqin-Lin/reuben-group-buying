@@ -23,7 +23,7 @@ dev:
 
 # Docker
 up:
-	docker compose up -d
+	docker compose up -d mysql redis app
 
 down:
 	docker compose down
@@ -32,7 +32,7 @@ docker-build:
 	docker compose build app
 
 docker-up:
-	docker compose up -d --build app
+	docker compose up -d --build mysql redis app
 
 docker-down:
 	docker compose down

@@ -93,6 +93,67 @@ func GetTakeCount(ctx context.Context, rdb *goredis.Client, activityID int64, us
 	return count, nil
 }
 
+// GetActiveCount 获取用户活跃订单数（锁定+已支付）。
+// key 不存在返回 0。
+func GetActiveCount(ctx context.Context, rdb *goredis.Client, activityID int64, userID string) (int64, error) {
+	key := ActiveCountKey(activityID, userID)
+	count, err := rdb.Get(ctx, key).Int64()
+	if err == goredis.Nil {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("get active count: %w", err)
+	}
+	return count, nil
+}
+
+// IncrActiveCount 递增用户活跃订单数（锁单成功时 +1）。
+func IncrActiveCount(ctx context.Context, rdb *goredis.Client, activityID int64, userID string, ttl time.Duration) (int64, error) {
+	key := ActiveCountKey(activityID, userID)
+	count, err := rdb.Incr(ctx, key).Result()
+	if err != nil {
+		metrics.IncrRedis("incr", "err")
+		return 0, fmt.Errorf("incr active count: %w", err)
+	}
+	metrics.IncrRedis("incr", "ok")
+	if ttl > 0 {
+		r := rdb.Expire(ctx, key, ttl)
+		_ = r.Err() // 非关键路径
+	}
+	return count, nil
+}
+
+// DecrActiveCount 递减用户活跃订单数（退单/超时时 -1）。
+// key 不存在时忽略（可能 Redis 重启丢失，下次锁单会从 DB 重建）。
+func DecrActiveCount(ctx context.Context, rdb *goredis.Client, activityID int64, userID string) error {
+	key := ActiveCountKey(activityID, userID)
+	exists, err := rdb.Exists(ctx, key).Result()
+	if err != nil {
+		return fmt.Errorf("decr active count exists: %w", err)
+	}
+	if exists == 0 {
+		return nil
+	}
+	if _, err := rdb.Decr(ctx, key).Result(); err != nil {
+		metrics.IncrRedis("decr", "err")
+		return fmt.Errorf("decr active count: %w", err)
+	}
+	metrics.IncrRedis("decr", "ok")
+	return nil
+}
+
+// InitActiveCount 初始化用户活跃订单数（从 DB 加载后回种）。
+// SETNX 语义，仅在 key 不存在时设置。
+func InitActiveCount(ctx context.Context, rdb *goredis.Client, activityID int64, userID string, count int64, ttl time.Duration) error {
+	key := ActiveCountKey(activityID, userID)
+	ttlSec := max(ttl.Seconds(), 1)
+	err := rdb.SetNX(ctx, key, count, time.Duration(ttlSec)*time.Second).Err()
+	if err != nil {
+		return fmt.Errorf("init active count: %w", err)
+	}
+	return nil
+}
+
 // InitTakeCount 初始化用户参与计数（从 DB 加载后回种）。
 //
 // SETNX 语义：仅在 key 不存在时设置。并发安全。

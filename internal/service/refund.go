@@ -475,6 +475,14 @@ func (s *RefundService) releaseStock(ctx context.Context, activityID int64, team
 	}
 }
 
+// decrActive 退单后递减活跃订单计数（最佳努力）。
+// 失败不影响退款主流程，下次锁单会从 DB 重建。
+func (s *RefundService) decrActive(ctx context.Context, activityID int64, userID string) {
+	if err := s.cacheRepo.DecrActiveCount(ctx, activityID, userID); err != nil {
+		slog.WarnContext(ctx, "refund: decr active count failed", "activity_id", activityID, "user_id", userID, "error", err)
+	}
+}
+
 // createRefundNotifyTask 创建退单回调通知任务。
 // 失败仅打日志，不阻塞退单主流程。
 func (s *RefundService) createRefundNotifyTask(ctx context.Context, order *model.Order, category string) {

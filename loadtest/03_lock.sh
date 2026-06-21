@@ -24,7 +24,7 @@ run_lock() {
     local rate="$1" dur="${2:-10s}"
     clean_scenario "LOADTEST-%"
     vegeta_run "lock_${rate}" "$rate" "$dur" "$TARGET" "锁单-完整写路径 rate=${rate}/s"
-    echo "  Redis keys 残留: $(redis_exec DBSIZE)"
+    echo "  Redis keys 写入: $(redis_exec DBSIZE)"
     clean_scenario "LOADTEST-%"
 }
 

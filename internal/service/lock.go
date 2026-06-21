@@ -184,20 +184,36 @@ func (s *LockService) Lock(ctx context.Context, req LockRequest) (*LockResult, e
 		return nil, &LockError{Code: errcode.CodeCrowdBlocked, Err: fmt.Errorf("user not in required crowd for activity %d", req.ActivityID)}
 	}
 
-	// 5. 限购检查（统计锁定+已支付订单数，防止锁了不付绕过限购）
-	//    注意：超时退单（status=2）不计入，释放名额后可重新参团。
+	// 5. 限购检查（Redis 缓存活跃订单数，miss 回源 DB）
 	activity, err := s.getActivity(ctx, req.ActivityID)
 	if err != nil {
 		return nil, fmt.Errorf("lock: find activity: %w", err)
 	}
-	paidCount, err := s.orderRepo.CountPaidOrdersByUserActivity(ctx, req.UserID, req.ActivityID)
+	activityTTL := time.Until(activity.EndTime)
+	activeCount, err := s.cacheRepo.GetActiveCount(ctx, req.ActivityID, req.UserID)
 	if err != nil {
-		return nil, fmt.Errorf("lock: check take_limit: %w", err)
+		// Redis 异常不阻塞，降级查 DB
+		slog.ErrorContext(ctx, "lock: redis get active count failed, fallback to db", "error", err)
+		activeCount, err = s.orderRepo.CountActiveOrdersByUserActivity(ctx, req.UserID, req.ActivityID)
+		if err != nil {
+			return nil, fmt.Errorf("lock: check take_limit: %w", err)
+		}
 	}
-	if activity.TakeLimit > 0 && int(paidCount) >= activity.TakeLimit {
+	if activeCount == 0 {
+		// Redis miss → 回源 DB 并回种
+		dbCount, dbErr := s.orderRepo.CountActiveOrdersByUserActivity(ctx, req.UserID, req.ActivityID)
+		if dbErr != nil {
+			return nil, fmt.Errorf("lock: check take_limit from db: %w", dbErr)
+		}
+		activeCount = dbCount
+		if initErr := s.cacheRepo.InitActiveCount(ctx, req.ActivityID, req.UserID, dbCount, activityTTL); initErr != nil {
+			slog.ErrorContext(ctx, "lock: init active count cache failed", "error", initErr)
+		}
+	}
+	if activity.TakeLimit > 0 && int(activeCount) >= activity.TakeLimit {
 		return nil, &LockError{
 			Code: errcode.CodeTakeLimitReached,
-			Err:  fmt.Errorf("take limit reached: %d/%d (paid)", paidCount, activity.TakeLimit),
+			Err:  fmt.Errorf("take limit reached: %d/%d (locked+paid)", activeCount, activity.TakeLimit),
 		}
 	}
 
@@ -213,8 +229,13 @@ func (s *LockService) Lock(ctx context.Context, req LockRequest) (*LockResult, e
 		return nil, err
 	}
 
+	// 6b. 锁单成功 → Redis 活跃计数 +1
+	if _, incrErr := s.cacheRepo.IncrActiveCount(ctx, req.ActivityID, req.UserID, activityTTL); incrErr != nil {
+		slog.ErrorContext(ctx, "lock: incr active count failed", "error", incrErr)
+	}
+
 	// 7. 创建支付单（压测/测试时可降级跳过）
-	// 支付创建失败 → 补偿回滚（删订单/团、释放 Redis 名额），不缓存结果，返回错误。
+	// 支付创建失败 → 补偿回滚（删订单/团、释放 Redis 名额、回退活跃计数），不缓存结果，返回错误。
 	// 同 outTradeNo 重试时走正常流程重建订单+支付。
 	if s.payGateway != nil && !dynamic.FeatureSkipPayment.Get() {
 		payURL, paymentErr := s.createPayment(ctx, result)
@@ -225,6 +246,7 @@ func (s *LockService) Lock(ctx context.Context, req LockRequest) (*LockResult, e
 				"error", paymentErr,
 			)
 			s.rollbackLock(ctx, req.TeamID == "", result, req.ActivityID)
+			_ = s.cacheRepo.DecrActiveCount(ctx, req.ActivityID, req.UserID)
 			return nil, fmt.Errorf("create payment: %w", paymentErr)
 		}
 		result.PayURL = payURL

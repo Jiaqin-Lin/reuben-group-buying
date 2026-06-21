@@ -101,7 +101,7 @@ vegeta_run() {
     $VEGETA report -type=text "$bin_out" | tee "$txt_out"
 
     local p99=$($VEGETA report -type=json "$bin_out" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('latencies',{}).get('99th',0)/1000000)" 2>/dev/null || echo "?")
-    local success=$($VEGETA report -type=json "$bin_out" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('success',0))" 2>/dev/null || echo "?")
+    local success=$($VEGETA report -type=json "$bin_out" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d.get('success',0)*100,1))" 2>/dev/null || echo "?")
     local mean_lat=$($VEGETA report -type=json "$bin_out" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('latencies',{}).get('mean',0)/1000000)" 2>/dev/null || echo "?")
 
     echo ""
