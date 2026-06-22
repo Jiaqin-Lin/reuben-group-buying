@@ -6,6 +6,6 @@ scrape_configs:
   - job_name: "group-buy"
     metrics_path: "/metrics"
     static_configs:
-      - targets: ["app:8080"]
+      - targets: ["app:8081"]
         labels:
           service: "group-buy"

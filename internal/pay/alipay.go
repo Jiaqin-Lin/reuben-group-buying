@@ -191,12 +191,15 @@ func (g *AlipayGateway) Refund(ctx context.Context, orderID string, refundAmount
 }
 
 // resolveKey 解析密钥。
-// 支持三种格式：
-//  1. PEM 内容（以 -----BEGIN 开头）→ 直接返回
-//  2. 裸 base64（支付宝密钥工具导出格式）→ 自动补 PEM 头
-//  3. 文件路径 → 读取内容
+// 支持四种格式：
+//  1. ${ENV_VAR} 占位符 → os.ExpandEnv 展开（兼容 docker-compose 环境变量注入）
+//  2. PEM 内容（以 -----BEGIN 开头）→ 直接返回
+//  3. 裸 base64（支付宝密钥工具导出格式）→ 自动补 PEM 头
+//  4. 文件路径 → 读取内容
 func resolveKey(s string) (string, error) {
 	s = strings.TrimSpace(s)
+	// 展开 ${ENV_VAR} 占位符（无匹配的保持原样）
+	s = os.ExpandEnv(s)
 	if s == "" {
 		return "", fmt.Errorf("empty key")
 	}

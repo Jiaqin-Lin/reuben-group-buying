@@ -237,7 +237,7 @@ func TestOrderRepo_FindTimeoutOrders(t *testing.T) {
 
 	// 使用 UTC 时间，与 Docker MySQL 容器的时区一致
 	// MySQL 的 NOW() 返回 UTC，Go 本地时间是 UTC+8，不一致会导致查询结果偏差
-	now := time.Now().UTC()
+	now := time.Now().UTC() // DSN loc=UTC，Go 时间以 UTC 存入；UTC_TIMESTAMP() 也返回 UTC
 	pastEnd := now.Add(-10 * time.Minute)
 	futureEnd := now.Add(30 * time.Minute)
 

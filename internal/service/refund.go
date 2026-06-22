@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"strings"
 	"syscall"
 
 	"gorm.io/gorm"
@@ -176,6 +177,9 @@ func (s *RefundService) unpaidRefund(ctx context.Context, order *model.Order) (*
 	// 5. 释放 Redis 名额
 	s.releaseStock(ctx, order.ActivityID, order.TeamID, order.OutTradeNo)
 
+	// 6. 递减活跃订单计数（退款不占 take_limit 名额）
+	s.decrActive(ctx, order.ActivityID, order.UserID)
+
 	slog.InfoContext(ctx, "refund unpaid done", "order_id", order.OrderID, "team_id", order.TeamID)
 
 	return &RefundResult{
@@ -199,8 +203,8 @@ func (s *RefundService) unpaidRefund(ctx context.Context, order *model.Order) (*
 func (s *RefundService) paidRefund(ctx context.Context, order *model.Order) (*RefundResult, error) {
 	slog.DebugContext(ctx, "refund: paid", "order_id", order.OrderID, "team_id", order.TeamID)
 
-	// 0. 先调用支付网关退款（外部副作用优先，DB 失败可重试）
-	if s.payGateway != nil {
+	// 0. 调用支付网关退款（Mock 支付跳过，支付宝没有这笔交易）
+	if s.payGateway != nil && !s.isMockPayment(ctx, order.OrderID) {
 		if _, err := s.payGateway.Refund(ctx, order.OrderID, order.PayPrice); err != nil {
 			slog.ErrorContext(ctx, "refund paid: gateway refund failed", "order_id", order.OrderID, "error", err)
 			return nil, &RefundError{Code: refundErrCode(err), Err: fmt.Errorf("gateway refund: %w", err)}
@@ -229,6 +233,12 @@ func (s *RefundService) paidRefund(ctx context.Context, order *model.Order) (*Re
 	// 4. 释放 Redis 名额
 	s.releaseStock(ctx, order.ActivityID, order.TeamID, order.OutTradeNo)
 
+	// 5. 递减 take_limit 计数（退款不占参与次数）
+	s.decrTakeCount(ctx, order.ActivityID, order.UserID)
+
+	// 6. 递减活跃订单计数（退款不占 take_limit 名额）
+	s.decrActive(ctx, order.ActivityID, order.UserID)
+
 	slog.InfoContext(ctx, "refund paid done", "order_id", order.OrderID, "team_id", order.TeamID)
 
 	return &RefundResult{
@@ -253,8 +263,8 @@ func (s *RefundService) paidRefund(ctx context.Context, order *model.Order) (*Re
 func (s *RefundService) paidTeamRefund(ctx context.Context, order *model.Order) (*RefundResult, error) {
 	slog.DebugContext(ctx, "refund: paid team", "order_id", order.OrderID, "team_id", order.TeamID)
 
-	// 0. 调用支付网关退款（已成团退单同样需要真实退款）
-	if s.payGateway != nil {
+	// 0. 调用支付网关退款（Mock 支付跳过）
+	if s.payGateway != nil && !s.isMockPayment(ctx, order.OrderID) {
 		if _, err := s.payGateway.Refund(ctx, order.OrderID, order.PayPrice); err != nil {
 			slog.ErrorContext(ctx, "refund paid team: gateway refund failed", "order_id", order.OrderID, "error", err)
 			return nil, &RefundError{Code: refundErrCode(err), Err: fmt.Errorf("gateway refund: %w", err)}
@@ -280,6 +290,12 @@ func (s *RefundService) paidTeamRefund(ctx context.Context, order *model.Order) 
 	s.createRefundNotifyTask(ctx, order, model.NotifyCategoryPaidTeamRefund)
 
 	// 4. 不释放名额（已成团）
+
+	// 5. 递减 take_limit 计数（退款不占参与次数）
+	s.decrTakeCount(ctx, order.ActivityID, order.UserID)
+
+	// 6. 递减活跃订单计数（退款不占 take_limit 名额）
+	s.decrActive(ctx, order.ActivityID, order.UserID)
 
 	slog.InfoContext(ctx, "refund paid team done", "order_id", order.OrderID, "team_id", order.TeamID, "new_team_status", newTeamStatus)
 
@@ -321,6 +337,9 @@ func (s *RefundService) unpaidRefundFailedTeam(ctx context.Context, order *model
 	// 4. 释放 Redis 名额
 	s.releaseStock(ctx, order.ActivityID, order.TeamID, order.OutTradeNo)
 
+	// 5. 递减活跃订单计数（退款不占 take_limit 名额）
+	s.decrActive(ctx, order.ActivityID, order.UserID)
+
 	slog.InfoContext(ctx, "refund unpaid failed team done", "order_id", order.OrderID, "team_id", order.TeamID)
 
 	return &RefundResult{
@@ -344,8 +363,8 @@ func (s *RefundService) unpaidRefundFailedTeam(ctx context.Context, order *model
 func (s *RefundService) paidRefundFailedTeam(ctx context.Context, order *model.Order) (*RefundResult, error) {
 	slog.DebugContext(ctx, "refund: paid failed team", "order_id", order.OrderID, "team_id", order.TeamID)
 
-	// 0. 调用支付网关退款
-	if s.payGateway != nil {
+	// 0. 调用支付网关退款（Mock 支付跳过）
+	if s.payGateway != nil && !s.isMockPayment(ctx, order.OrderID) {
 		if _, err := s.payGateway.Refund(ctx, order.OrderID, order.PayPrice); err != nil {
 			slog.ErrorContext(ctx, "refund paid failed team: gateway refund failed", "order_id", order.OrderID, "error", err)
 			return nil, &RefundError{Code: refundErrCode(err), Err: fmt.Errorf("gateway refund: %w", err)}
@@ -365,6 +384,12 @@ func (s *RefundService) paidRefundFailedTeam(ctx context.Context, order *model.O
 
 	// 3. 释放 Redis 名额（团已失败，名额应该还回来）
 	s.releaseStock(ctx, order.ActivityID, order.TeamID, order.OutTradeNo)
+
+	// 4. 递减 take_limit 计数（退款不占参与次数）
+	s.decrTakeCount(ctx, order.ActivityID, order.UserID)
+
+	// 5. 递减活跃订单计数（退款不占 take_limit 名额）
+	s.decrActive(ctx, order.ActivityID, order.UserID)
 
 	slog.InfoContext(ctx, "refund paid failed team done", "order_id", order.OrderID, "team_id", order.TeamID)
 
@@ -386,8 +411,8 @@ func (s *RefundService) paidRefundFailedTeam(ctx context.Context, order *model.O
 func (s *RefundService) directRefund(ctx context.Context, order *model.Order) (*RefundResult, error) {
 	slog.DebugContext(ctx, "refund: direct buy", "order_id", order.OrderID)
 
-	// 已支付的需要调支付网关退款
-	if order.Status == model.OrderStatusPaid && s.payGateway != nil {
+	// 已支付的需要调支付网关退款（Mock 支付跳过）
+	if order.Status == model.OrderStatusPaid && s.payGateway != nil && !s.isMockPayment(ctx, order.OrderID) {
 		if _, err := s.payGateway.Refund(ctx, order.OrderID, order.PayPrice); err != nil {
 			slog.ErrorContext(ctx, "refund direct: gateway refund failed", "order_id", order.OrderID, "error", err)
 			return nil, &RefundError{Code: refundErrCode(err), Err: fmt.Errorf("gateway refund: %w", err)}
@@ -464,6 +489,30 @@ func (s *RefundService) closePayment(ctx context.Context, orderID string) {
 	if err := s.paymentRepo.UpdatePaymentClosed(ctx, orderID); err != nil {
 		// 支付可能不存在（锁单时未创建 payment），或已处于非 pending 状态
 		slog.DebugContext(ctx, "refund: close payment skipped", "order_id", orderID, "reason", err)
+	}
+}
+
+// isMockPayment 检查是否为 Mock 支付（TradeNo 以 MOCK_ 开头）。
+// Mock 支付的退款不调真实网关（支付宝没有这笔交易），直接跳过。
+func (s *RefundService) isMockPayment(ctx context.Context, orderID string) bool {
+	pm, err := s.paymentRepo.FindPaymentByOrderID(ctx, orderID)
+	if err != nil {
+		// 查不到 payment 也跳过网关退款（安全侧：宁可少退网关，不卡死退款流程）
+		slog.WarnContext(ctx, "refund: find payment for mock check failed, skip gateway", "order_id", orderID, "error", err)
+		return true
+	}
+	if pm.TradeNo != nil && strings.HasPrefix(*pm.TradeNo, "MOCK_") {
+		return true
+	}
+	return false
+}
+
+// decrTakeCount 退款后递减 take_limit 计数（最佳努力）。
+// 退款订单不应占用用户的参与次数。Lua 保证不会减到负数。
+// 失败不影响退款主流程。
+func (s *RefundService) decrTakeCount(ctx context.Context, activityID int64, userID string) {
+	if err := s.cacheRepo.DecrTakeCount(ctx, activityID, userID); err != nil {
+		slog.WarnContext(ctx, "refund: decr take count failed", "activity_id", activityID, "user_id", userID, "error", err)
 	}
 }
 

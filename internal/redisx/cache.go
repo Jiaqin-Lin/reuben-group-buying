@@ -154,6 +154,61 @@ func InitActiveCount(ctx context.Context, rdb *goredis.Client, activityID int64,
 	return nil
 }
 
+// SyncActiveCount 强制同步活跃订单数（用于脏数据修复）。
+// 先 DEL 再 SET，不管 key 是否已存在都会写入正确值。
+// 适用场景：Redis 脏数据修复、cron 定期校验。
+func SyncActiveCount(ctx context.Context, rdb *goredis.Client, activityID int64, userID string, count int64, ttl time.Duration) error {
+	key := ActiveCountKey(activityID, userID)
+	ttlSec := max(ttl.Seconds(), 1)
+	// DEL + SET 原子性由 pipeline 保证
+	pipe := rdb.Pipeline()
+	pipe.Del(ctx, key)
+	pipe.Set(ctx, key, count, time.Duration(ttlSec)*time.Second)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("sync active count: %w", err)
+	}
+	return nil
+}
+
+// ScanActiveCountKeys 扫描所有活跃订单计数 key。
+// 用于运维：遍历 bgm:active:* 并对比 DB 修正脏数据。
+func ScanActiveCountKeys(ctx context.Context, rdb *goredis.Client, cursor uint64, count int64) ([]string, uint64, error) {
+	keys, nextCursor, err := rdb.Scan(ctx, cursor, "bgm:active:*", count).Result()
+	if err != nil {
+		return nil, 0, fmt.Errorf("scan active count keys: %w", err)
+	}
+	return keys, nextCursor, nil
+}
+
+// DecrTakeCount 递减用户参与计数（退款时 -1）。
+//
+// key 不存在时忽略（可能 Redis 重启丢失，下次结算会从 DB 重建）。
+// 使用 Lua 保证不会减到负数。
+func DecrTakeCount(ctx context.Context, rdb *goredis.Client, activityID int64, userID string) error {
+	key := TakeLimitKey(activityID, userID)
+	exists, err := rdb.Exists(ctx, key).Result()
+	if err != nil {
+		return fmt.Errorf("decr take count exists: %w", err)
+	}
+	if exists == 0 {
+		return nil
+	}
+	// Lua: 仅当 value > 0 时才 DECR，防止减到负数
+	script := goredis.NewScript(`
+		local v = redis.call('GET', KEYS[1])
+		if v and tonumber(v) > 0 then
+			return redis.call('DECR', KEYS[1])
+		end
+		return v and tonumber(v) or 0
+	`)
+	if _, err := script.Run(ctx, rdb, []string{key}).Result(); err != nil {
+		metrics.IncrRedis("decr", "err")
+		return fmt.Errorf("decr take count: %w", err)
+	}
+	metrics.IncrRedis("decr", "ok")
+	return nil
+}
+
 // InitTakeCount 初始化用户参与计数（从 DB 加载后回种）。
 //
 // SETNX 语义：仅在 key 不存在时设置。并发安全。

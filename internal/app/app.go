@@ -41,15 +41,17 @@ import (
 
 // App 聚合所有运行时组件。
 type App struct {
-	cfg        *config.Config
-	logger     *slog.Logger
-	srv        *http.Server
-	notifySvc  *service.NotifyService
-	timeoutSvc *service.TimeoutService
-	dynMgr     *dynamic.Manager
-	localCache *cache.LocalCache
-	ctx        context.Context    // app 级 context，cron job 和 shutdown 使用
-	cancel     context.CancelFunc // 触发 graceful shutdown 时 cancel
+	cfg          *config.Config
+	logger       *slog.Logger
+	srv          *http.Server
+	notifySvc    *service.NotifyService
+	timeoutSvc   *service.TimeoutService
+	dynMgr       *dynamic.Manager
+	localCache   *cache.LocalCache
+	rmqProducer  mq.Producer
+	rmqConsumer  *mq.TimeoutConsumer
+	ctx          context.Context    // app 级 context，cron job 和 shutdown 使用
+	cancel       context.CancelFunc // 触发 graceful shutdown 时 cancel
 }
 
 // New 从配置构建完整的 App。
@@ -118,27 +120,67 @@ func New(cfg *config.Config) (*App, error) {
 	}
 	payGateway := pay.NewDynamicGateway(mockGW, alipayGW, dynamic.FeatureUseMockPayment)
 
-	// 7. 组装 Service 层（注入 localCache + payment）
+	// 7. 创建 RocketMQ 生产者（后续 Service 共用）
+	rmqProducer, err := mq.NewRocketMQProducer(mq.RocketMQConfig{
+		NameServer: cfg.RocketMQ.NameServer,
+		GroupName:  cfg.RocketMQ.ProducerGroup,
+		WarmTopic:  cfg.RocketMQ.Topic,
+	}, logger)
+	if err != nil {
+		return nil, fmt.Errorf("init rocketmq producer: %w", err)
+	}
+
+	// 8. 组装 Service 层（注入 localCache + payment + mq）
 	trialSvc := service.NewTrialService(activityRepo, productRepo, cacheRepo, crowdRepo, localCache)
 	lockSvc := service.NewLockService(
 		trialSvc, orderRepo, activityRepo, cacheRepo, localCache,
-		payGateway, paymentRepo,
+		payGateway, paymentRepo, rmqProducer, cfg.RocketMQ.Topic,
 		time.Duration(cfg.App.OrderLockTTL)*time.Second,
 		time.Duration(cfg.App.LockResultTTL)*time.Second,
 	)
 	settlementSvc := service.NewSettlementService(orderRepo, activityRepo, cacheRepo, notifyRepo, localCache)
 	refundSvc := service.NewRefundService(orderRepo, paymentRepo, cacheRepo, notifyRepo, payGateway)
 
-	// 8. 组装 MQ 和 Notify 服务（Phase 8）
-	mqClient := mq.New(rdb, logger)
+	// 9. 超时消费者：订阅 RocketMQ 延迟消息，触发支付超时退单
+	timeoutConsumer, err := mq.NewTimeoutConsumer(mq.TimeoutConsumerConfig{
+		NameServer: cfg.RocketMQ.NameServer,
+		GroupName:  cfg.RocketMQ.ConsumerGroup,
+		Topic:      cfg.RocketMQ.Topic,
+		Tag:        "topic.timeout_payment",
+	}, func(ctx context.Context, msg mq.TimeoutMessage) error {
+		// 跳过空消息（warm-up）
+		if msg.OutTradeNo == "" {
+			return nil
+		}
+		// 查订单状态，仅 Locked 状态才退单
+		order, orderErr := orderRepo.FindOrderByOutTradeNo(ctx, msg.OutTradeNo)
+		if orderErr != nil {
+			return fmt.Errorf("timeout consumer: find order %s: %w", msg.OutTradeNo, orderErr)
+		}
+		if order.Status != 0 { // model.OrderStatusLocked
+			logger.DebugContext(ctx, "timeout consumer: order already processed, skip",
+				"out_trade_no", msg.OutTradeNo, "status", order.Status)
+			return nil
+		}
+		_, refundErr := refundSvc.Refund(ctx, service.RefundRequest{
+			UserID:     msg.UserID,
+			OutTradeNo: msg.OutTradeNo,
+		})
+		return refundErr
+	}, logger)
+	if err != nil {
+		return nil, fmt.Errorf("init timeout consumer: %w", err)
+	}
+
+	// 10. 组装 Notify 服务
 	notifySvc := service.NewNotifyService(
-		notifyRepo, cacheRepo, mqClient,
+		notifyRepo, cacheRepo, rmqProducer, cfg.RocketMQ.Topic,
 		service.NotifyServiceConfig{
 			MaxRetry: cfg.App.NotifyMaxRetry,
 		},
 	)
 
-	// 9. 动态配置（Phase 9a）
+	// 11. 动态配置（Phase 9a）
 	dynMgr := dynamic.New(db, rdb, redisx.ConfigChannel(), logger)
 
 	if err := dynMgr.Register(
@@ -149,7 +191,6 @@ func New(cfg *config.Config) (*App, error) {
 		dynamic.NotifyWorkerCount,
 		dynamic.TimeoutScanBatch,
 		dynamic.FeatureSkipCrowd,
-		dynamic.FeatureSkipPayment,
 		dynamic.FeatureUseMockPayment,
 	); err != nil {
 		return nil, fmt.Errorf("register dynamic configs: %w", err)
@@ -290,12 +331,14 @@ func New(cfg *config.Config) (*App, error) {
 	}
 
 	return &App{
-		cfg:        cfg,
-		logger:     logger,
-		notifySvc:  notifySvc,
-		timeoutSvc: timeoutSvc,
-		dynMgr:     dynMgr,
-		localCache: localCache,
+		cfg:          cfg,
+		logger:       logger,
+		notifySvc:    notifySvc,
+		timeoutSvc:   timeoutSvc,
+		dynMgr:       dynMgr,
+		localCache:   localCache,
+		rmqProducer:  rmqProducer,
+		rmqConsumer:  timeoutConsumer,
 		srv: &http.Server{
 			Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
 			Handler:      router,
@@ -315,6 +358,20 @@ func (a *App) Run() error {
 	a.dynMgr.Watch(context.Background())
 	defer a.dynMgr.Stop()
 
+	// 启动 RocketMQ 超时消费者（重试直到 topic 自动创建，最多 2 分钟）
+	go func() {
+		for i := 0; i < 24; i++ {
+			if err := a.rmqConsumer.Start(); err != nil {
+				a.logger.Warn("timeout consumer start failed, retrying in 5s", "attempt", i+1, "error", err)
+				time.Sleep(5 * time.Second)
+				continue
+			}
+			a.logger.Info("timeout consumer started successfully")
+			return
+		}
+		a.logger.Error("timeout consumer failed after max retries, cron scanner will serve as fallback")
+	}()
+
 	// 启动 HTTP 服务
 	go func() {
 		a.logger.Info("server starting", "port", a.cfg.Server.Port, "mode", a.cfg.Server.Mode)
@@ -327,8 +384,9 @@ func (a *App) Run() error {
 	// 启动定时任务（使用 app 级 ctx，shutdown 时 cancel 可中断正在运行的 job）
 	c := cron.New()
 
-	// 每 15s 扫描待发送的回调通知
-	_, err := c.AddFunc("@every 15s", func() {
+	// 每 60s 扫描待发送的回调通知（RocketMQ 同步发送失败概率低，60s 兜底足够）
+	notifySpec := fmt.Sprintf("@every %ds", a.cfg.App.NotifyScanInterval)
+	_, err := c.AddFunc(notifySpec, func() {
 		if err := a.notifySvc.ExecPendingTasks(a.ctx); err != nil {
 			a.logger.Error("notify cron job failed", "error", err)
 		}
@@ -363,7 +421,7 @@ func (a *App) Run() error {
 
 	c.Start()
 	a.logger.Info("cron jobs started",
-		"jobs", fmt.Sprintf("notify-scanner@15s, timeout-scanner@%s, cache-refresh@300s", timeoutSpec),
+		"jobs", fmt.Sprintf("notify-scanner@%s, timeout-scanner@%s, cache-refresh@300s", notifySpec, timeoutSpec),
 	)
 
 	quit := make(chan os.Signal, 1)
@@ -389,6 +447,14 @@ func (a *App) Run() error {
 
 	// 4. 等待 cron job 全部完成
 	<-cronCtx.Done()
+
+	// 5. 关闭 RocketMQ 消费者和生产者
+	if err := a.rmqConsumer.Shutdown(); err != nil {
+		a.logger.Warn("rocketmq consumer shutdown", "error", err)
+	}
+	if err := a.rmqProducer.Close(); err != nil {
+		a.logger.Error("rocketmq producer close", "error", err)
+	}
 
 	a.logger.Info("server stopped")
 	return nil

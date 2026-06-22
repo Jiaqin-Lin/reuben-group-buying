@@ -12,12 +12,13 @@ import (
 
 // Config 全局配置
 type Config struct {
-	Server ServerConfig `mapstructure:"server"`
-	MySQL  MySQLConfig  `mapstructure:"mysql"`
-	Redis  RedisConfig  `mapstructure:"redis"`
-	Log    LogConfig    `mapstructure:"log"`
-	App    AppConfig    `mapstructure:"app"`
-	Alipay AlipayConfig `mapstructure:"alipay"`
+	Server   ServerConfig   `mapstructure:"server"`
+	MySQL    MySQLConfig    `mapstructure:"mysql"`
+	Redis    RedisConfig    `mapstructure:"redis"`
+	Log      LogConfig      `mapstructure:"log"`
+	App      AppConfig      `mapstructure:"app"`
+	Alipay   AlipayConfig   `mapstructure:"alipay"`
+	RocketMQ RocketMQConfig `mapstructure:"rocketmq"`
 }
 
 // ServerConfig HTTP 服务配置
@@ -65,8 +66,17 @@ type AppConfig struct {
 	LockResultTTL       int    `mapstructure:"lock_result_ttl"`
 	OrderLockTTL        int    `mapstructure:"order_lock_ttl"`
 	NotifyMaxRetry      int    `mapstructure:"notify_max_retry"`
+	NotifyScanInterval  int    `mapstructure:"notify_scan_interval"`
 	TimeoutScanInterval int    `mapstructure:"timeout_scan_interval"`
 	AdminToken          string `mapstructure:"admin_token"`
+}
+
+// RocketMQConfig RocketMQ 连接配置。
+type RocketMQConfig struct {
+	NameServer    string `mapstructure:"name_server"`
+	ProducerGroup string `mapstructure:"producer_group"`
+	ConsumerGroup string `mapstructure:"consumer_group"`
+	Topic         string `mapstructure:"topic"`
 }
 
 // AlipayConfig 支付宝支付配置。
@@ -141,8 +151,14 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("app.lock_result_ttl", 600)
 	v.SetDefault("app.order_lock_ttl", 15)
 	v.SetDefault("app.notify_max_retry", 5)
-	v.SetDefault("app.timeout_scan_interval", 30)
+	v.SetDefault("app.notify_scan_interval", 60)
+	v.SetDefault("app.timeout_scan_interval", 300)
 	v.SetDefault("app.admin_token", "admin-dev-token")
+
+	v.SetDefault("rocketmq.name_server", "127.0.0.1:9876")
+	v.SetDefault("rocketmq.producer_group", "group_buy_producer")
+	v.SetDefault("rocketmq.consumer_group", "group_buy_timeout_consumer")
+	v.SetDefault("rocketmq.topic", "group_buy_market_topic")
 
 	v.SetDefault("alipay.sandbox", true)
 	v.SetDefault("alipay.sign_type", "RSA2")

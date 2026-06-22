@@ -55,6 +55,10 @@ type CacheRepository interface {
 	// GetTakeCount 获取用户当前参与次数。
 	GetTakeCount(ctx context.Context, activityID int64, userID string) (int64, error)
 
+	// DecrTakeCount 递减用户参与计数（退款时 -1）。
+	// key 不存在时忽略，不会减到负数。
+	DecrTakeCount(ctx context.Context, activityID int64, userID string) error
+
 	// TakeLimitCheckAndIncr 原子检查用户限购次数 + 递增。
 	// 支付成功时调用，Lua 脚本原子完成：key 不存在→用 dbCount 初始化→检查>=limit→未达上限则 INCR。
 	// 返回 (newCount, true) 表示允许参与，(0, false) 表示已达上限。
@@ -73,6 +77,12 @@ type CacheRepository interface {
 
 	// InitActiveCount 初始化用户活跃订单数（从 DB 加载后回种，SETNX 语义）。
 	InitActiveCount(ctx context.Context, activityID int64, userID string, count int64, ttl time.Duration) error
+
+	// SyncActiveCount 强制同步活跃订单数（先 DEL 再 SET，用于脏数据修复）。
+	SyncActiveCount(ctx context.Context, activityID int64, userID string, count int64, ttl time.Duration) error
+
+	// ScanActiveCountKeys 扫描 bgm:active:* 前缀的 key（用于运维校验）。
+	ScanActiveCountKeys(ctx context.Context, cursor uint64, count int64) ([]string, uint64, error)
 
 	// --- 锁单结果缓存 ---
 
@@ -190,6 +200,14 @@ func (r *redisCacheRepo) GetTakeCount(ctx context.Context, activityID int64, use
 	return count, nil
 }
 
+func (r *redisCacheRepo) DecrTakeCount(ctx context.Context, activityID int64, userID string) error {
+	err := redisx.DecrTakeCount(ctx, r.rdb, activityID, userID)
+	if err != nil {
+		return fmt.Errorf("cache decr take count: %w", err)
+	}
+	return nil
+}
+
 func (r *redisCacheRepo) TakeLimitCheckAndIncr(ctx context.Context, activityID int64, userID string, dbCount int64, limit int, ttl time.Duration) (int64, bool, error) {
 	result, err := redisx.TakeLimitCheckAndIncr(ctx, r.rdb, activityID, userID, dbCount, limit, ttl)
 	if err != nil {
@@ -233,6 +251,22 @@ func (r *redisCacheRepo) InitActiveCount(ctx context.Context, activityID int64, 
 		return fmt.Errorf("cache init active count: %w", err)
 	}
 	return nil
+}
+
+func (r *redisCacheRepo) SyncActiveCount(ctx context.Context, activityID int64, userID string, count int64, ttl time.Duration) error {
+	err := redisx.SyncActiveCount(ctx, r.rdb, activityID, userID, count, ttl)
+	if err != nil {
+		return fmt.Errorf("cache sync active count: %w", err)
+	}
+	return nil
+}
+
+func (r *redisCacheRepo) ScanActiveCountKeys(ctx context.Context, cursor uint64, count int64) ([]string, uint64, error) {
+	keys, next, err := redisx.ScanActiveCountKeys(ctx, r.rdb, cursor, count)
+	if err != nil {
+		return nil, 0, fmt.Errorf("cache scan active count keys: %w", err)
+	}
+	return keys, next, nil
 }
 
 // --- 锁单结果缓存 ---

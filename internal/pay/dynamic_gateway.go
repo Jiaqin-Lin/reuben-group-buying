@@ -2,6 +2,7 @@ package pay
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/reuben/group-buying/internal/config/dynamic"
 	"github.com/reuben/group-buying/internal/model"
@@ -32,8 +33,19 @@ func NewDynamicGateway(mock, alipay Gateway, useMock *dynamic.Def[bool]) *Dynami
 }
 
 // real 当前生效的网关。
+//
+// 规则：
+//   - alipay 未配置 → 强制 mock（无论 useMock 值）
+//   - alipay 已配置 + useMock=true → mock（测试模式）
+//   - alipay 已配置 + useMock=false → 真实支付宝
+//
+// 当 alipay==nil 但 useMock=false 时，输出 ERROR 日志，
+// 帮助运维排查"明明关了 mock 怎么还是 mock"的问题。
 func (d *DynamicGateway) real() Gateway {
 	if d.alipay == nil {
+		if !d.useMock.Get() {
+			slog.Error("DynamicGateway: use_mock_payment=false but alipay gateway is nil (init failed?), forcing mock. Check alipay config or ALIPAY_PRIVATE_KEY env var.")
+		}
 		return d.mock
 	}
 	if d.useMock.Get() {

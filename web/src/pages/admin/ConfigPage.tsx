@@ -41,12 +41,7 @@ export function ConfigPage() {
   const startEdit = (key: string, rawValue: unknown) => {
     const currentValue = unwrap(rawValue);
     setEditingKey(key);
-    const def = getConfigDef(key);
-    if (def?.type === 'bool') {
-      setEditValue(!currentValue);
-    } else {
-      setEditValue(currentValue);
-    }
+    setEditValue(currentValue);
   };
 
   const cancelEdit = () => {

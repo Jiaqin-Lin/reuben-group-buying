@@ -58,6 +58,8 @@ func newTestLockService(t *testing.T) *LockService {
 		repository.NewRedisCacheRepo(testRDB), nil, // localCache
 		nil, // payGateway
 		nil, // paymentRepo
+		nil, // mqProducer (tests don't need delayed messages)
+		"",  // mqTopic
 		3*time.Second,
 		10*time.Minute,
 	)

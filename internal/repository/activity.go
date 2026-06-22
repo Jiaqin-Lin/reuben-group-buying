@@ -110,13 +110,13 @@ func (r *activityRepo) FindActivityWithDiscount(ctx context.Context, activityID 
 }
 
 // FindActiveActivities 查询所有生效中的活动。
-// WHERE status = 1 AND start_time <= NOW() AND end_time >= NOW()
+// WHERE status = 1 AND start_time <= UTC_TIMESTAMP() AND end_time >= UTC_TIMESTAMP()
 func (r *activityRepo) FindActiveActivities(ctx context.Context) ([]model.Activity, error) {
 	var activities []model.Activity
 	err := r.db.WithContext(ctx).
 		Where("status = ?", model.ActivityStatusActive).
-		Where("start_time <= NOW()").
-		Where("end_time >= NOW()").
+		Where("start_time <= UTC_TIMESTAMP()").
+		Where("end_time >= UTC_TIMESTAMP()").
 		Find(&activities).Error
 	if err != nil {
 		return nil, fmt.Errorf("find active activities: %w", err)

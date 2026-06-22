@@ -125,10 +125,43 @@ export function HomePage() {
     queryClient.invalidateQueries({ queryKey: ['my-orders', userId] });
   }, [refetchProducts, refetchTeams, queryClient, userId]);
 
+  // Handle lock success: show payment modal (with QR) or auto-settle (skip payment)
+  const handleLockSuccess = useCallback(
+    async (data: LockResult) => {
+      setLockResult(data);
+      // When pay_url is empty (skip_payment), auto-settle immediately
+      if (!data.pay_url) {
+        try {
+          await tradeApi.settlement({
+            user_id: userId!,
+            out_trade_no: data.out_trade_no,
+            out_trade_time: new Date().toISOString(),
+            source: DEFAULT_SOURCE,
+            channel: DEFAULT_CHANNEL,
+          });
+          addToast('下单成功（支付已跳过）', 'success');
+          refreshAll();
+        } catch {
+          addToast('下单成功，但结算失败，请手动处理', 'error');
+        }
+        return;
+      }
+      setShowPayment(true);
+      setPaymentConfirmClose(false);
+      addToast('下单成功', 'success');
+      refreshAll();
+    },
+    [userId, addToast, refreshAll],
+  );
+
+  const isMockPayment = lockResult?.pay_url?.includes('mock');
+
   useEffect(() => {
     if (!showPayment || !lockResult) return;
 
+    let active = true;
     const poll = async () => {
+      if (!active) return;
       try {
         const current = lockResultRef.current;
         if (!current) return;
@@ -137,19 +170,26 @@ export function HomePage() {
           setShowPayment(false);
           addToast('支付成功！', 'success');
           refreshAll();
+          return;
         }
       } catch {
         // Not paid yet
       }
+      // Schedule next poll
+      if (active) {
+        pollTimerRef.current = setTimeout(poll, POLL_INTERVAL);
+      }
     };
 
-    pollTimerRef.current = setInterval(poll, POLL_INTERVAL);
-    return () => stopPolling();
+    // First poll immediately
+    poll();
+
+    return () => { active = false; stopPolling(); };
   }, [showPayment, lockResult, addToast, refreshAll]);
 
   const stopPolling = () => {
     if (pollTimerRef.current) {
-      clearInterval(pollTimerRef.current);
+      clearTimeout(pollTimerRef.current);
       pollTimerRef.current = null;
     }
   };
@@ -171,13 +211,7 @@ export function HomePage() {
         buy_type: 'group',
       },
       {
-        onSuccess: (data) => {
-          setLockResult(data);
-          setShowPayment(true);
-          setPaymentConfirmClose(false);
-          addToast('下单成功', 'success');
-          refreshAll();
-        },
+        onSuccess: (data) => handleLockSuccess(data),
         onError: (err) => addToast(getErrorMessage(err.code), 'error'),
       },
     );
@@ -200,12 +234,7 @@ export function HomePage() {
         buy_type: 'direct',
       },
       {
-        onSuccess: (data) => {
-          setLockResult(data);
-          setShowPayment(true);
-          setPaymentConfirmClose(false);
-          addToast('下单成功', 'success');
-        },
+        onSuccess: (data) => handleLockSuccess(data),
         onError: (err) => addToast(getErrorMessage(err.code), 'error'),
       },
     );
@@ -229,13 +258,7 @@ export function HomePage() {
         buy_type: 'group',
       },
       {
-        onSuccess: (data) => {
-          setLockResult(data);
-          setShowPayment(true);
-          setPaymentConfirmClose(false);
-          addToast('加入成功', 'success');
-          refreshAll();
-        },
+        onSuccess: (data) => handleLockSuccess(data),
         onError: (err) => addToast(getErrorMessage(err.code), 'error'),
       },
     );
@@ -305,47 +328,50 @@ export function HomePage() {
         </p>
       </section>
 
-      {/* Product cards */}
+      {/* Product cards — teams inline below selected product */}
       <section className="mb-6 space-y-3">
-        {products.map((p) => (
-          <div
-            key={p.goods_id}
-            onClick={() => setSelectedProduct(p)}
-            className="cursor-pointer"
-          >
-            <ProductCard
-              product={p}
-              isSelected={selectedProduct?.goods_id === p.goods_id}
-              onStartGroup={() => handleStartGroup(p)}
-              onDirectBuy={() => handleDirectBuy(p)}
-              isLockPending={lockMutation.isPending}
-            />
-          </div>
-        ))}
+        {products.map((p) => {
+          const isSelected = selectedProduct?.goods_id === p.goods_id;
+          return (
+            <div key={p.goods_id}>
+              <div
+                onClick={() => setSelectedProduct(p)}
+                className="cursor-pointer"
+              >
+                <ProductCard
+                  product={p}
+                  isSelected={isSelected}
+                  onStartGroup={() => handleStartGroup(p)}
+                  onDirectBuy={() => handleDirectBuy(p)}
+                  isLockPending={lockMutation.isPending}
+                />
+              </div>
+              {/* Inline team list below selected product */}
+              {isSelected && p.activity && (
+                <div className="mt-3 ml-2 border-l-2 border-[var(--color-accent)] pl-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <h2 className="text-sm font-medium text-[var(--color-text-muted)] uppercase tracking-wide">
+                      拼团队伍
+                    </h2>
+                    <span className="text-xs text-[var(--color-text-muted)]">
+                      {p.goods_name}
+                    </span>
+                  </div>
+                  <TeamList
+                    teams={teams}
+                    teamsLoading={teamsLoading}
+                    isEnabled={true}
+                    joiningTeamId={joiningTeamId}
+                    isLockPending={lockMutation.isPending}
+                    myTeamIds={myTeamIds}
+                    onJoin={handleJoinTeam}
+                  />
+                </div>
+              )}
+            </div>
+          );
+        })}
       </section>
-
-      {/* Team list (only for selected product with activity) */}
-      {selectedProduct?.activity && (
-        <section>
-          <div className="flex items-center gap-2 mb-3">
-            <h2 className="text-sm font-medium text-[var(--color-text-muted)] uppercase tracking-wide">
-              拼团队伍
-            </h2>
-            <span className="text-xs text-[var(--color-text-muted)]">
-              {selectedProduct.goods_name}
-            </span>
-          </div>
-          <TeamList
-            teams={teams}
-            teamsLoading={teamsLoading}
-            isEnabled={true}
-            joiningTeamId={joiningTeamId}
-            isLockPending={lockMutation.isPending}
-            myTeamIds={myTeamIds}
-            onJoin={handleJoinTeam}
-          />
-        </section>
-      )}
 
       {/* Payment Modal */}
       <Modal
@@ -389,8 +415,16 @@ export function HomePage() {
               deductionPrice={lockResult.deduction_price}
             />
 
-            {/* QR Code */}
-            {qrDataUrl ? (
+            {/* QR Code or Mock indicator */}
+            {isMockPayment ? (
+              <div className="w-[280px] h-[280px] bg-[var(--color-surface)] border-2 border-dashed border-[var(--color-accent)] rounded-xl flex flex-col items-center justify-center gap-3">
+                <svg className="w-10 h-10 text-[var(--color-accent)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
+                </svg>
+                <p className="text-sm font-medium text-[var(--color-text-primary)]">模拟支付</p>
+                <p className="text-xs text-[var(--color-text-muted)]">Mock 模式，自动完成</p>
+              </div>
+            ) : qrDataUrl ? (
               <div className="flex flex-col items-center gap-2">
                 <img
                   src={qrDataUrl}

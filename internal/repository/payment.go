@@ -93,7 +93,7 @@ func (r *paymentRepo) UpdatePaymentPaid(ctx context.Context, orderID string, tra
 		Updates(map[string]any{
 			"status":   model.PaymentStatusPaid,
 			"trade_no": tradeNo,
-			"paid_at":  gorm.Expr("NOW()"),
+			"paid_at":  gorm.Expr("UTC_TIMESTAMP()"),
 		})
 	if result.Error != nil {
 		return fmt.Errorf("update payment paid %s: %w", orderID, result.Error)

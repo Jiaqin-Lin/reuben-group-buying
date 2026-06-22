@@ -21,7 +21,8 @@ ENV TZ=Asia/Shanghai
 COPY --from=builder /server /server
 COPY config.yaml /config.yaml
 COPY migrations/ /migrations/
+COPY --from=builder /src/web/dist /web/dist
 
-EXPOSE 8080
+EXPOSE 8081
 
 ENTRYPOINT ["/server"]

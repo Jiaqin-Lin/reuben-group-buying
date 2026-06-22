@@ -9,9 +9,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
-	"time"
 
-	"github.com/reuben/group-buying/internal/infra/mq"
 	"github.com/reuben/group-buying/internal/model"
 	"github.com/reuben/group-buying/internal/repository"
 )
@@ -21,17 +19,39 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
+// mockProducer 用于测试的 mq.Producer mock。
+type mockProducer struct {
+	published []mockMessage
+}
+
+type mockMessage struct {
+	topic, tag string
+	payload    []byte
+}
+
+func (m *mockProducer) Publish(_ context.Context, topic, tag string, payload []byte) error {
+	m.published = append(m.published, mockMessage{topic: topic, tag: tag, payload: payload})
+	return nil
+}
+
+func (m *mockProducer) PublishDelayed(_ context.Context, topic, tag string, payload []byte, _ int) error {
+	m.published = append(m.published, mockMessage{topic: topic, tag: tag, payload: payload})
+	return nil
+}
+
+func (m *mockProducer) Close() error { return nil }
+
 // newTestNotifyService 创建测试用 NotifyService。
 func newTestNotifyService(t *testing.T) *NotifyService {
 	t.Helper()
 	if testDB == nil || testRDB == nil {
 		t.Skip("mysql or redis not available")
 	}
-	mqClient := mq.New(testRDB, testLogger())
 	return NewNotifyService(
 		repository.NewNotifyTaskRepo(testDB),
 		repository.NewRedisCacheRepo(testRDB),
-		mqClient,
+		&mockProducer{},
+		"group_buy_market_topic",
 		NotifyServiceConfig{
 			MaxRetry:    3,
 			BatchSize:   10,
@@ -212,34 +232,31 @@ func TestNotifyHTTPExhausted(t *testing.T) {
 // TestNotifyMQ 测试 MQ 回调成功。
 func TestNotifyMQ(t *testing.T) {
 	defer clearNotifyTestData(t)
-	svc := newTestNotifyService(t)
 	ctx := context.Background()
 
-	channel := "topic_team_notify_test"
+	mock := &mockProducer{}
+	svc := NewNotifyService(
+		repository.NewNotifyTaskRepo(testDB),
+		repository.NewRedisCacheRepo(testRDB),
+		mock,
+		"group_buy_market_topic",
+		NotifyServiceConfig{
+			MaxRetry:    3,
+			BatchSize:   10,
+			Concurrency: 5,
+		},
+	)
+
+	tag := "topic.team_success"
 	payload := `{"teamId":"TEAM_NTF_MQ01","outTradeNoList":["EXT_MQ01"]}`
 
-	// 订阅 channel，验证能收到消息
-	var received atomic.Bool
-	ready, err := svc.mqClient.Subscribe(ctx, channel, func(msg []byte) error {
-		if string(msg) == payload {
-			received.Store(true)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("subscribe: %v", err)
-	}
-	<-ready                           // 等待订阅就绪
-	time.Sleep(50 * time.Millisecond) // 给 Redis 一点时间
-
-	target := channel
 	category := model.NotifyCategorySettlement
 	task := &model.NotifyTask{
 		ActivityID:   800004,
 		TeamID:       "TEAM_NTF_MQ01",
 		Category:     &category,
 		NotifyType:   model.NotifyTypeMQ,
-		NotifyTarget: &target,
+		NotifyTarget: &tag,
 		RetryCount:   0,
 		Status:       model.NotifyStatusInit,
 		Payload:      payload,
@@ -254,11 +271,19 @@ func TestNotifyMQ(t *testing.T) {
 		t.Fatalf("exec pending tasks: %v", err)
 	}
 
-	// 等消息到达
-	time.Sleep(200 * time.Millisecond)
-
-	if !received.Load() {
-		t.Error("MQ message was not received by subscriber")
+	// 验证 mock producer 收到消息
+	if len(mock.published) != 1 {
+		t.Fatalf("expected 1 published message, got %d", len(mock.published))
+	}
+	msg := mock.published[0]
+	if msg.topic != "group_buy_market_topic" {
+		t.Errorf("expected topic 'group_buy_market_topic', got %q", msg.topic)
+	}
+	if msg.tag != tag {
+		t.Errorf("expected tag %q, got %q", tag, msg.tag)
+	}
+	if string(msg.payload) != payload {
+		t.Errorf("payload mismatch: got %q, want %q", string(msg.payload), payload)
 	}
 
 	// 验证任务状态变为成功

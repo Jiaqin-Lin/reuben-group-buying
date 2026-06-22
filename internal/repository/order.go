@@ -92,7 +92,7 @@ type OrderRepository interface {
 	// --- 超时扫描 ---
 
 	// FindTimeoutOrders 查询超时未支付的订单列表。
-	// JOIN orders + teams：orders.status=0（锁定中）且 teams.valid_end < NOW()。
+	// JOIN orders + teams：orders.status=0（锁定中）且 teams.valid_end < UTC_TIMESTAMP()。
 	// 定时任务游标分页扫描，每次限量处理。
 	FindTimeoutOrders(ctx context.Context, limit int, lastID uint64) ([]TimeoutOrder, error)
 
@@ -332,7 +332,7 @@ func (r *orderRepo) UpdateOrderStatusWithCheck(ctx context.Context, orderID stri
 func (r *orderRepo) RefundTeamForming(ctx context.Context, teamID string, lockDelta, completeDelta int) error {
 	result := r.db.WithContext(ctx).
 		Model(&model.Team{}).
-		Where("team_id = ? AND status = ?", teamID, model.TeamStatusForming).
+		Where("team_id = ? AND status = ? AND lock_count + ? >= 0 AND complete_count + ? >= 0", teamID, model.TeamStatusForming, lockDelta, completeDelta).
 		Updates(map[string]any{
 			"lock_count":     gorm.Expr("lock_count + ?", lockDelta),
 			"complete_count": gorm.Expr("complete_count + ?", completeDelta),
@@ -374,8 +374,9 @@ func (r *orderRepo) RefundCompleteTeam(ctx context.Context, teamID string, lockD
 
 		newCompleteCount := team.CompleteCount + completeDelta
 		newLockCount := team.LockCount + lockDelta
-
-		// 根据锁行读到的 complete_count 决定新状态
+		if newLockCount < 0 {
+			newLockCount = 0
+		}
 		if newCompleteCount > 0 {
 			newStatus = model.TeamStatusCompleteRefunded
 		} else {
@@ -524,7 +525,7 @@ func (r *orderRepo) SettleOrder(ctx context.Context, params SettleOrderParams) (
 func (r *orderRepo) FindTimeoutOrders(ctx context.Context, limit int, lastID uint64) ([]TimeoutOrder, error) {
 	// 游标分页：用 orders.id > lastID 代替 OFFSET，避免大偏移量性能问题。
 	// 两类超时订单：
-	//   A. 拼团订单：JOIN teams，按支付超时(5min)或拼团过期(valid_end)判定
+	//   A. 拼团订单：JOIN teams+activities，按支付超时(5min)或拼团过期(valid_end)或活动截止(end_time)判定
 	//   B. 直接购买订单：team_id=""，仅按支付超时(5min)判定
 	var orders []TimeoutOrder
 
@@ -534,9 +535,10 @@ func (r *orderRepo) FindTimeoutOrders(ctx context.Context, limit int, lastID uin
 		Table("orders").
 		Select("orders.*, teams.valid_end AS team_valid_end").
 		Joins("JOIN teams ON teams.team_id = orders.team_id").
+			Joins("JOIN activities ON activities.activity_id = teams.activity_id").
 		Where("orders.status = ?", model.OrderStatusLocked).
 		Where("orders.id > ?", lastID).
-		Where("(orders.created_at + INTERVAL 5 MINUTE < NOW() OR teams.valid_end < NOW())").
+		Where("(orders.created_at + INTERVAL 5 MINUTE < UTC_TIMESTAMP() OR teams.valid_end < UTC_TIMESTAMP() OR activities.end_time < UTC_TIMESTAMP())").
 		Order("orders.id ASC").
 		Limit(limit).
 		Find(&groupOrders).Error
@@ -555,7 +557,7 @@ func (r *orderRepo) FindTimeoutOrders(ctx context.Context, limit int, lastID uin
 			Where("orders.team_id = ?", "").
 			Where("orders.status = ?", model.OrderStatusLocked).
 			Where("orders.id > ?", lastID).
-			Where("orders.created_at + INTERVAL 5 MINUTE < NOW()").
+			Where("orders.created_at + INTERVAL 5 MINUTE < UTC_TIMESTAMP()").
 			Order("orders.id ASC").
 			Limit(remaining).
 			Find(&directOrders).Error

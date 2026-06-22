@@ -57,10 +57,10 @@ export const CONFIG_REGISTRY: ConfigDef[] = [
     description: '跳过人群标签检查（应急开关）',
   },
   {
-    key: 'feature.skip_payment',
+    key: 'feature.use_mock_payment',
     type: 'bool',
     default: true,
-    description: '跳过支付创建（测试用），true 时使用 Mock 支付',
+    description: 'Mock支付：true=Mock自动成功 false=真实支付宝',
   },
 ];
 

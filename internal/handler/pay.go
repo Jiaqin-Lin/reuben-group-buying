@@ -165,21 +165,122 @@ func (h *PayHandler) recordPaymentLog(ctx context.Context, orderID, notifyID, ra
 // GetPayment 查询支付单 — GET /api/v1/payments/:out_trade_no。
 //
 // 前端"继续支付"或支付弹窗轮询时调用。
+// 两种自动完成路径：
+//  1. Mock 支付：trade_no 以 "MOCK_" 开头，首次查询即自动完成
+//  2. 真实支付：主动向支付宝查询，已支付则更新本地状态并触发结算
+//     这是支付宝异步通知未送达时的兜底机制
+//
 // 响应：{ "payment": {...} }
 func (h *PayHandler) GetPayment(c *gin.Context) {
+	ctx := c.Request.Context()
 	outTradeNo := c.Param("out_trade_no")
 	if outTradeNo == "" {
 		response.Fail(c, errcode.CodeInvalidParam)
 		return
 	}
 
-	payment, err := h.paymentRepo.FindPaymentByOutTradeNo(c.Request.Context(), outTradeNo)
+	payment, err := h.paymentRepo.FindPaymentByOutTradeNo(ctx, outTradeNo)
 	if err != nil {
 		response.FailWithMsg(c, errcode.CodeOrderNotFound, "payment not found")
 		return
 	}
 
+	if payment.Status == model.PaymentStatusPending {
+		isMock := payment.TradeNo != nil && *payment.TradeNo != "" &&
+			len(*payment.TradeNo) >= 5 && (*payment.TradeNo)[:5] == "MOCK_"
+
+		if isMock {
+			// Mock 支付自动完成：首次查询即标记为已支付并触发结算
+			h.autoSettle(ctx, payment)
+			payment, _ = h.paymentRepo.FindPaymentByOutTradeNo(ctx, outTradeNo)
+		} else if h.payGateway != nil {
+			// 真实支付：主动向支付宝查询支付状态（兜底异步通知未送达）
+			h.syncPaymentFromGateway(ctx, payment)
+			payment, _ = h.paymentRepo.FindPaymentByOutTradeNo(ctx, outTradeNo)
+		}
+	}
+
 	response.Success(c, gin.H{"payment": payment})
+}
+
+// autoSettle Mock 支付自动完成：更新 payment → 触发结算。
+// 失败仅打日志，不影响 HTTP 响应。
+func (h *PayHandler) autoSettle(ctx context.Context, payment *model.Payment) {
+	if payment.TradeNo == nil {
+		return
+	}
+	if err := h.paymentRepo.UpdatePaymentPaid(ctx, payment.OrderID, *payment.TradeNo); err != nil {
+		slog.WarnContext(ctx, "pay: mock auto-settle update payment failed",
+			"order_id", payment.OrderID, "error", err)
+		return
+	}
+	order, err := h.orderRepo.FindOrderByOrderID(ctx, payment.OrderID)
+	if err != nil {
+		slog.WarnContext(ctx, "pay: mock auto-settle find order failed",
+			"order_id", payment.OrderID, "error", err)
+		return
+	}
+	_, err = h.settlementSvc.Settle(ctx, service.SettlementRequest{
+		UserID:       order.UserID,
+		OutTradeNo:   payment.OutTradeNo,
+		OutTradeTime: time.Now(),
+		Source:       order.Source,
+		Channel:      order.Channel,
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "pay: mock auto-settle failed",
+			"order_id", payment.OrderID, "error", err)
+	}
+}
+
+// syncPaymentFromGateway 向支付网关查询支付状态，已支付则自动完成。
+//
+// 这是支付宝异步通知未送达时的兜底机制——前端每次轮询 GetPayment
+// 都会触发主动查询，用户付了钱就能及时完成结算。
+// 网关查询失败静默跳过（网关不可用时不影响前端展示当前状态）。
+func (h *PayHandler) syncPaymentFromGateway(ctx context.Context, payment *model.Payment) {
+	result, err := h.payGateway.QueryOrder(ctx, payment.OrderID)
+	if err != nil {
+		slog.DebugContext(ctx, "pay: gateway query failed (not critical)",
+			"order_id", payment.OrderID, "error", err)
+		return
+	}
+	if result.Status != "TRADE_SUCCESS" {
+		return
+	}
+
+	// 更新 payment
+	tradeNo := result.TradeNo
+	if tradeNo == "" {
+		tradeNo = "GATEWAY_" + payment.OrderID
+	}
+	if err := h.paymentRepo.UpdatePaymentPaid(ctx, payment.OrderID, tradeNo); err != nil {
+		slog.WarnContext(ctx, "pay: sync update payment failed",
+			"order_id", payment.OrderID, "error", err)
+		// 可能已经 paid 了（并发），继续走结算
+	}
+
+	// 触发结算
+	order, err := h.orderRepo.FindOrderByOrderID(ctx, payment.OrderID)
+	if err != nil {
+		slog.WarnContext(ctx, "pay: sync find order failed",
+			"order_id", payment.OrderID, "error", err)
+		return
+	}
+	_, err = h.settlementSvc.Settle(ctx, service.SettlementRequest{
+		UserID:       order.UserID,
+		OutTradeNo:   payment.OutTradeNo,
+		OutTradeTime: time.Now(),
+		Source:       order.Source,
+		Channel:      order.Channel,
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "pay: sync settlement failed",
+			"order_id", payment.OrderID, "error", err)
+	} else {
+		slog.InfoContext(ctx, "pay: synced from gateway",
+			"order_id", payment.OrderID, "trade_no", tradeNo)
+	}
 }
 
 // ShowQR 展示支付二维码页面。

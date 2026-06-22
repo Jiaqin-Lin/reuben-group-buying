@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/reuben/group-buying/internal/cache"
-	"github.com/reuben/group-buying/internal/config/dynamic"
 	"github.com/reuben/group-buying/internal/errcode"
+	"github.com/reuben/group-buying/internal/infra/mq"
 	"github.com/reuben/group-buying/internal/model"
 	"github.com/reuben/group-buying/internal/pay"
 	"github.com/reuben/group-buying/internal/redisx"
@@ -34,6 +34,8 @@ type LockService struct {
 	localCache   *cache.LocalCache
 	payGateway   pay.Gateway
 	paymentRepo  repository.PaymentRepository
+	mqProducer   mq.Producer
+	mqTopic      string
 	lockTTL      time.Duration
 	resultTTL    time.Duration
 }
@@ -47,6 +49,8 @@ func NewLockService(
 	localCache *cache.LocalCache,
 	payGateway pay.Gateway,
 	paymentRepo repository.PaymentRepository,
+	mqProducer mq.Producer,
+	mqTopic string,
 	lockTTL, resultTTL time.Duration,
 ) *LockService {
 	return &LockService{
@@ -57,6 +61,8 @@ func NewLockService(
 		localCache:   localCache,
 		payGateway:   payGateway,
 		paymentRepo:  paymentRepo,
+		mqProducer:   mqProducer,
+		mqTopic:      mqTopic,
 		lockTTL:      lockTTL,
 		resultTTL:    resultTTL,
 	}
@@ -145,7 +151,7 @@ func (s *LockService) Lock(ctx context.Context, req LockRequest) (*LockResult, e
 		}
 
 		// 创建支付单
-		if s.payGateway != nil && !dynamic.FeatureSkipPayment.Get() {
+		if s.payGateway != nil {
 			payURL, paymentErr := s.createPayment(ctx, result)
 			if paymentErr != nil {
 				slog.ErrorContext(ctx, "lock: direct buy create payment failed, rolling back",
@@ -234,10 +240,10 @@ func (s *LockService) Lock(ctx context.Context, req LockRequest) (*LockResult, e
 		slog.ErrorContext(ctx, "lock: incr active count failed", "error", incrErr)
 	}
 
-	// 7. 创建支付单（压测/测试时可降级跳过）
+	// 7. 创建支付单（Mock 或真实支付宝，由 FeatureUseMockPayment 控制）
 	// 支付创建失败 → 补偿回滚（删订单/团、释放 Redis 名额、回退活跃计数），不缓存结果，返回错误。
 	// 同 outTradeNo 重试时走正常流程重建订单+支付。
-	if s.payGateway != nil && !dynamic.FeatureSkipPayment.Get() {
+	if s.payGateway != nil {
 		payURL, paymentErr := s.createPayment(ctx, result)
 		if paymentErr != nil {
 			slog.ErrorContext(ctx, "lock: create payment failed, rolling back",
@@ -254,6 +260,9 @@ func (s *LockService) Lock(ctx context.Context, req LockRequest) (*LockResult, e
 
 	// 8. 缓存结果
 	s.cacheResult(ctx, req.UserID, req.OutTradeNo, result)
+
+	// 9. 发送支付超时延迟消息（5 分钟后未支付则自动退单）
+	s.sendTimeoutMessage(ctx, req.OutTradeNo, req.UserID)
 
 	slog.DebugContext(ctx, "lock done", "user_id", req.UserID, "order_id", result.OrderID, "team_id", result.TeamID)
 	return result, nil
@@ -494,6 +503,7 @@ func (s *LockService) createPayment(ctx context.Context, result *LockResult) (st
 	}
 
 	payURL := payResult.PayURL
+	tradeNo := payResult.TradeNo
 	payment := &model.Payment{
 		OrderID:    result.OrderID,
 		OutTradeNo: result.OutTradeNo,
@@ -501,6 +511,7 @@ func (s *LockService) createPayment(ctx context.Context, result *LockResult) (st
 		TeamID:     result.TeamID,
 		Amount:     result.PayPrice,
 		Subject:    "拼团订单",
+		TradeNo:    &tradeNo,
 		PayURL:     &payURL,
 		Status:     model.PaymentStatusPending,
 		ExpireAt:   time.Now().Add(15 * time.Minute),
@@ -586,6 +597,29 @@ func generateNumericID(length int) string {
 		b[i] = byte('0' + rand.IntN(10))
 	}
 	return string(b)
+}
+
+// timeoutDelayLevel RocketMQ 延迟级别 9 = 5 分钟支付超时。
+const timeoutDelayLevel = 9
+
+// timeoutTag 支付超时延迟消息的 tag。
+const timeoutTag = "topic.timeout_payment"
+
+// sendTimeoutMessage 发送支付超时延迟消息（best-effort，失败不阻塞锁单）。
+func (s *LockService) sendTimeoutMessage(ctx context.Context, outTradeNo, userID string) {
+	if s.mqProducer == nil {
+		return
+	}
+	msg := mq.TimeoutMessage{OutTradeNo: outTradeNo, UserID: userID}
+	payload, err := json.Marshal(msg)
+	if err != nil {
+		slog.ErrorContext(ctx, "lock: marshal timeout message failed", "error", err)
+		return
+	}
+	if err := s.mqProducer.PublishDelayed(ctx, s.mqTopic, timeoutTag, payload, timeoutDelayLevel); err != nil {
+		slog.WarnContext(ctx, "lock: send timeout message failed (cron will fallback)",
+			"out_trade_no", outTradeNo, "error", err)
+	}
 }
 
 // LockError 锁单业务错误。

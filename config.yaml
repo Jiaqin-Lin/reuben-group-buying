@@ -2,7 +2,7 @@
 # 环境变量优先级高于 YAML（如 DB_HOST 覆盖 mysql.host）
 
 server:
-  port: 8080
+  port: 8081
   mode: debug  # debug | release | test
   read_timeout: 10s
   write_timeout: 10s
@@ -31,12 +31,19 @@ app:
   lock_result_ttl: 600     # 锁单结果缓存 TTL（秒）
   order_lock_ttl: 15       # 分布式锁 TTL（秒），需大于支付宝 HTTP 超时
   notify_max_retry: 5      # 回调最大重试次数
-  timeout_scan_interval: 30 # 超时扫描间隔（秒）
+  notify_scan_interval: 60    # 通知扫描间隔（秒），RocketMQ 发送失败+HTTP 重试兜底
+  timeout_scan_interval: 300  # 超时扫描间隔（秒），延迟消息的低频兜底
+
+rocketmq:
+  name_server: "127.0.0.1:9876"
+  producer_group: "group_buy_producer"
+  consumer_group: "group_buy_timeout_consumer"
+  topic: "group_buy_market_topic"
 
 # 支付宝沙箱配置（可选，不配置则使用 Mock 支付网关）
 alipay:
   app_id: "9021000156674325"              # 沙箱应用 APPID
-  private_key: "${ALIPAY_PRIVATE_KEY}"         # 应用私钥（PEM 内容或文件路径，需 PKCS1 格式）
+  private_key: "MIIEpQIBAAKCAQEA0Ht+xmcxw8siSb3UHFlNnwmItrUKVWn5qVFNuyOWHI3DTONbp6uLek/plM1JjisHsJJJ7VgdFZWH76Izl566teIZd/dBDCEAujL1EOFDd4Bg/KYYcZcDpC1D8FkD7msqKti9bz2ovwu8Hs9We3FmJffzixrvxgb/6LWATZEsfABb1LpBg+iP49q2s84+mFni9gFOHHz8o9Mt7HHHaAzYKcSpNW62e3isIbD3vMM+LdI2SH+cjZOyfVkwa91vqAXcduwYYeT+aC+YQVVq3FGgQ3JY/Tb5v28cYshIOGyQQcmcwqEjFKlujFYGIyZqou/psMVfSywz9Mshy2FxypkGQQIDAQABAoIBAQCRF4FRPvxJURPZ0jzORfBZYF8/GJvKeeiAx86bENclpBtpZUmiVSbKxta+8mfgg13kqsq8XXhQTzK9uVrCiHtUnbgv32nrsQQ6kcAwMTWs8zGMY2Pbmce0+LOxj6HGydoc255qzrSj0NzpbE65tl/qyLc79lEsti5fnAFg+knFOZCsTIIiQGkCVGSrgpygiMoHh+Gm8VOq1BeQmLUIJUQfZ/kuwcviQmTp60JxyfKzc6krL2oqi9+Gqiea9XgRvpAxu8hB0avlKPJd2iFpzjTPd+rgoaGYpkjUFAR8J+Pd0FPVC3+/yOgeD3KACnGIJcwJwN5UZTUvFDlObmjRE4fJAoGBAPOS2BqjAfsAlgsrVtj0OOp8lY1j6mRm6HK8+Y7EQx78XniqkoGTE200V1cVmI3YeCc3tzND8umjqNKeAaLD5TjGDxJH+u30g4P7Fx8PQZdQbvsJEpX+n3C1b8sSllXWCnoQIteQHry2j4i9chU7DY4ZA5+Bo7NdGPm/x7j/3trTAoGBANseWQR036X4D7l2759eNS9MYl9va8upXm5rvQZsQNNXKGxK0AX2RM72D2m7P0YY/Vqy7vmSERLs1JQm++CbkqWkeG5jrZ2wEoyY4ivxb4zaHFSwgUfBQsrK4B/t64MHn9RNFb8W4ufywycWIcwDI10+2E0LD0eCPGLrgg/+zQYbAoGBAJXM8B+htSwb9iu0YdtYiFCegpPMqXFKYRd/5bPKPMWnzKpFrYkHXWFCWZzzaTmDspHcEE31MkZDIyc1iigCds1t8gL6Rfdm9CONn3C4v0xCaZ72u3mIeaKl07V/Hvp3g0YC+oq81kqVtL0SVkF8ah/Efpfw8S70yNGBA2Jh6zuFAoGBAL7mZLWeQU8unDx/42pcQEfR646r2yVXjN703H1hCOVXdO9MCop3MSGCfJEoQosGsIw5gjxKxrdPQDFG+YCI6a2Iaif6jcLpKG/3rmyMbxwu1inukON7+34EXFlVBi9lEBl9gym1fcCI3v8JqC4+uau+WeJddVVeoM+p0OmwmtzrAoGAa4+SC3qHvGhX/EqY7/9JkpG3c+yaUXMXcsQBB9pRZ+My/NzhXZQRCEO9k4MECoqnum16sBLnNI7JbVgQNpI4DRS0eroq86+4JFj04z/IoUXp7AX5HTRu1BctNpFS/vmJ549vFAuiiYLAsEXoWt7OXZve2w0Fj7w7Qbmm4PGCLNc="         # 应用私钥（PEM 内容或文件路径，需 PKCS1 格式）
   alipay_public_key: "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAstF5bIOg92edPNVAhk3bOngm2XOnPeq+WviDHbQct2cMgEdfgXR6GxT9ZGO6IlswexGV58iCJL5Rn+ilKvx2lD7EUNRwfBQDgBacxVzAnjr9UwfApGEehCMVW1bt+yQoO02m8y6d6KUkum30DXfC3XAO6DppofIL+igVz/2gQPnIngX/qPMJpekC7HA3n/WCtwWr9I9IGR0Z2iVsQ722LTvZ+8ErWmFyA5pF3dmdOb7CBYVEvCr/335HNfwpLHCuj/A6E8L1riq60Xxf5dyHOM8cebbJWVGTmt5ASFjZec+e5ORg92VFfUrajcBn6w12fTR3RfIhBST3hzqGrXAoQwIDAQAB"   # 支付宝公钥（上传应用公钥后从沙箱页面获取）
   notify_url: "http://42.192.113.117:8080/api/v1/pay/notify"          # 异步回调地址（支付宝 POST 通知到此，需公网可达）
   return_url: "https://chat.deepseek.com/"          # PC 支付后同步跳转地址（可选）

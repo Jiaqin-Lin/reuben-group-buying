@@ -21,11 +21,12 @@ import (
 // 与 Java 版差异：
 //   - 仅 cron 扫描（不用 eager dispatch），更简单
 //   - 仅全局分布式锁防多实例重复扫描（不用 per-team 双重锁）
-//   - MQ 用 Redis Pub/Sub（不用 RocketMQ）
+//   - MQ 用 RocketMQ（Redis Pub/Sub 仅用于动态配置传播）
 type NotifyService struct {
 	notifyRepo  repository.NotifyTaskRepository
 	cacheRepo   repository.CacheRepository
-	mqClient    *mq.Client
+	mqProducer  mq.Producer
+	mqTopic     string
 	httpClient  *http.Client
 	maxRetry    int
 	batchSize   int
@@ -52,7 +53,8 @@ func DefaultNotifyConfig() NotifyServiceConfig {
 func NewNotifyService(
 	notifyRepo repository.NotifyTaskRepository,
 	cacheRepo repository.CacheRepository,
-	mqClient *mq.Client,
+	mqProducer mq.Producer,
+	mqTopic string,
 	cfg NotifyServiceConfig,
 ) *NotifyService {
 	if cfg.MaxRetry <= 0 {
@@ -68,7 +70,8 @@ func NewNotifyService(
 	return &NotifyService{
 		notifyRepo: notifyRepo,
 		cacheRepo:  cacheRepo,
-		mqClient:   mqClient,
+		mqProducer: mqProducer,
+		mqTopic:    mqTopic,
 		httpClient: &http.Client{
 			Timeout: 5 * time.Second,
 		},
@@ -276,25 +279,25 @@ func (s *NotifyService) httpNotify(ctx context.Context, task *model.NotifyTask) 
 	return nil
 }
 
-// mqNotify Redis Pub/Sub 回调通知。
+// mqNotify RocketMQ 回调通知。
 //
-// Publish 到 task.NotifyTarget（即 MQ topic/channel），payload 为消息体。
+// Publish 到 RocketMQ topic，tag = task.NotifyTarget（即 team.NotifyURL，如 "topic.team_success"）。
 // notify_target 为空时视为成功。
 func (s *NotifyService) mqNotify(ctx context.Context, task *model.NotifyTask) error {
-	target := ""
+	tag := ""
 	if task.NotifyTarget != nil {
-		target = *task.NotifyTarget
+		tag = *task.NotifyTarget
 	}
-	if target == "" {
-		slog.DebugContext(ctx, "notify mq: empty channel, treating as success", "task_id", task.ID)
+	if tag == "" {
+		slog.DebugContext(ctx, "notify mq: empty tag, treating as success", "task_id", task.ID)
 		return nil
 	}
 
-	if err := s.mqClient.Publish(ctx, target, []byte(task.Payload)); err != nil {
-		return fmt.Errorf("mq notify: %s: %w", target, err)
+	if err := s.mqProducer.Publish(ctx, s.mqTopic, tag, []byte(task.Payload)); err != nil {
+		return fmt.Errorf("mq notify: %s:%s: %w", s.mqTopic, tag, err)
 	}
 
-	slog.DebugContext(ctx, "notify mq success", "task_id", task.ID, "channel", target)
+	slog.DebugContext(ctx, "notify mq success", "task_id", task.ID, "topic", s.mqTopic, "tag", tag)
 	return nil
 }
 

@@ -16,6 +16,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -227,7 +228,7 @@ func (c *LocalCache) GetProduct(goodsID string) (*model.Product, bool) {
 	return p, ok
 }
 
-// GetAllProducts 返回所有商品（只读，调用方不可修改）。
+// GetAllProducts 返回所有商品，按 goods_id 排序（只读，调用方不可修改）。
 func (c *LocalCache) GetAllProducts() []*model.Product {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -235,6 +236,9 @@ func (c *LocalCache) GetAllProducts() []*model.Product {
 	for _, p := range c.products {
 		result = append(result, p)
 	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].GoodsID < result[j].GoodsID
+	})
 	return result
 }
 

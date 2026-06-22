@@ -19,8 +19,9 @@ export function ProductCard({
   onDirectBuy,
   isLockPending,
 }: ProductCardProps) {
-  const hasActivity = product.activity !== null;
-  const deduction = product.activity?.deduction_price;
+  const act = product.activity;
+  const hasActivity = act != null;
+  const deduction = act?.deduction_price;
 
   return (
     <Card
@@ -48,13 +49,13 @@ export function ProductCard({
               </span>
             )}
             <span className="text-xs text-[var(--color-text-muted)]">
-              {product.activity!.target_count}人成团
+              {act.target_count}人成团
             </span>
           </div>
           <PriceDisplay
             originalPrice={product.original_price}
-            payPrice={product.activity!.pay_price}
-            deductionPrice={product.activity!.deduction_price}
+            payPrice={act.pay_price}
+            deductionPrice={act.deduction_price}
           />
         </div>
       ) : (
