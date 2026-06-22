@@ -24,7 +24,7 @@ redis:
 
 log:
   level: debug  # debug | info | warn | error
-  format: text  # text | json
+  format: json  # text | json
 
 app:
   name: group-buy

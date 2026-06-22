@@ -1,0 +1,22 @@
+# Promtail 日志采集配置
+# 采集 app.log（slog 文本日志），推送到 Loki
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: group-buy-app
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: group-buy
+          app: group-buy-server
+          __path__: /var/log/group-buy/app.log

@@ -37,13 +37,13 @@ docker-up:
 docker-down:
 	docker compose down
 
-# Monitoring (Prometheus + Grafana, requires app already running)
+# Monitoring (Prometheus + Grafana + Loki + Promtail)
 monitor-up:
-	docker compose up -d prometheus grafana
+	docker compose up -d prometheus grafana loki promtail
 
 monitor-down:
-	docker compose stop prometheus grafana
-	docker compose rm -f prometheus grafana
+	docker compose stop prometheus grafana loki promtail
+	docker compose rm -f prometheus grafana loki promtail
 
 # Test
 test:

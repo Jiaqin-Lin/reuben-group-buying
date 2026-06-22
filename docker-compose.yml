@@ -66,6 +66,7 @@ services:
       - "8081:8081"
     environment:
       - GIN_MODE=release
+      - SERVER_PORT=8081
       - MYSQL_HOST=mysql
       - MYSQL_PORT=3306
       - MYSQL_USER=dev
@@ -113,11 +114,36 @@ services:
       - GF_INSTALL_PLUGINS=
     volumes:
       - ./docker/grafana/datasources/prometheus.yml:/etc/grafana/provisioning/datasources/prometheus.yml:ro
+      - ./docker/grafana/datasources/loki.yml:/etc/grafana/provisioning/datasources/loki.yml:ro
       - ./docker/grafana/dashboards/dashboard.yml:/etc/grafana/provisioning/dashboards/dashboard.yml:ro
       - ./docker/grafana/dashboards/group-buy.json:/var/lib/grafana/dashboards/group-buy.json:ro
       - grafana_data:/var/lib/grafana
     depends_on:
       - prometheus
+
+  loki:
+    image: grafana/loki:3.1.0
+    container_name: group-buy-loki
+    restart: unless-stopped
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./docker/loki/loki-config.yaml:/etc/loki/config.yaml:ro
+      - loki_data:/loki
+    command: -config.file=/etc/loki/config.yaml
+
+  promtail:
+    image: grafana/promtail:3.1.0
+    container_name: group-buy-promtail
+    restart: unless-stopped
+    ports:
+      - "9080:9080"
+    volumes:
+      - ./docker/promtail/promtail-config.yaml:/etc/promtail/config.yaml:ro
+      - /home/cc/group-buy/app.log:/var/log/group-buy/app.log:ro
+    command: -config.file=/etc/promtail/config.yaml
+    depends_on:
+      - loki
 
 volumes:
   mysql_data:
@@ -125,3 +151,4 @@ volumes:
   rocketmq_data:
   prometheus_data:
   grafana_data:
+  loki_data:
